@@ -23,6 +23,7 @@ import functools
 import jax
 import jax.numpy as jnp
 import optax
+from jax.experimental import io_callback
 
 from jaxrware import Warehouse, make_config
 from .config import MAPPOConfig
@@ -159,7 +160,15 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     return params, target_critic, opt_state, diagnostics
 
 
-def make_train(cfg: MAPPOConfig, num_updates: int | None = None):
+def _host_log(upd, ret, ent, loss, vloss):
+    """Host-side live print, fired once per update via io_callback (cheap)."""
+    print(f"  update {int(upd):4d} | return {float(ret):8.3f} | "
+          f"entropy {float(ent):6.3f} | loss {float(loss):8.3f} | "
+          f"value_loss {float(vloss):8.3f}", flush=True)
+
+
+def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
+               live_log: bool = False):
     env_cfg = make_config(cfg.size, cfg.n_agents, cfg.difficulty)
     env = Warehouse(env_cfg)
     N = cfg.n_agents
@@ -193,7 +202,7 @@ def make_train(cfg: MAPPOConfig, num_updates: int | None = None):
         opt_state = tx.init(params)
         welford = (jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.array(0.0))
 
-        def update_step(carry, _):
+        def update_step(carry, upd_idx):
             params, target_critic, opt_state, welford, key = carry
             key, kreset, krun = jax.random.split(key, 3)
 
@@ -241,11 +250,19 @@ def make_train(cfg: MAPPOConfig, num_updates: int | None = None):
                 "entropy": diag["epoch_entropy"][-1],
                 "reward_std_mean": rstd_t.mean(),
             }
+            if live_log:
+                io_callback(
+                    _host_log, None, upd_idx, metrics["episode_return"],
+                    metrics["entropy"], metrics["loss"], metrics["value_loss"],
+                    ordered=False,
+                )
             carry = (params, target_critic, opt_state, welford, key)
             return carry, metrics
 
         init_carry = (params, target_critic, opt_state, welford, key)
-        carry, metrics = jax.lax.scan(update_step, init_carry, None, length=n_updates)
+        carry, metrics = jax.lax.scan(
+            update_step, init_carry, jnp.arange(n_updates), length=n_updates
+        )
         return {"params": carry[0], "metrics": metrics}
 
     return train, env

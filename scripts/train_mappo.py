@@ -30,13 +30,32 @@ def main():
                     help="overrides config total_steps; ignored if --updates given")
     ap.add_argument("--updates", type=int, default=None,
                     help="number of MAPPO updates to run (smoke runs)")
+    ap.add_argument("--parallel-envs", type=int, default=None,
+                    help="override parallel_envs (e.g. 128 for fast wall-clock)")
+    ap.add_argument("--entropy-coef", type=float, default=None,
+                    help="override entropy_coef (raise for large-batch exploration)")
+    ap.add_argument("--lr", type=float, default=None,
+                    help="override Adam learning rate (raise for large batch)")
+    ap.add_argument("--num-epochs", type=int, default=None,
+                    help="override PPO epochs per update (more grad steps/update)")
     args = ap.parse_args()
+
+    overrides = {}
+    if args.parallel_envs is not None:
+        overrides["parallel_envs"] = args.parallel_envs
+    if args.entropy_coef is not None:
+        overrides["entropy_coef"] = args.entropy_coef
+    if args.lr is not None:
+        overrides["lr"] = args.lr
+    if args.num_epochs is not None:
+        overrides["num_epochs"] = args.num_epochs
 
     cfg = MAPPOConfig(
         size=args.size, n_agents=args.n_agents, difficulty=args.difficulty,
         seed=args.seed,
         total_steps=args.total_steps if args.total_steps is not None
         else MAPPOConfig.total_steps,
+        **overrides,
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
@@ -44,8 +63,10 @@ def main():
           f"time_limit={cfg.time_limit}  updates={n_updates}  "
           f"(steps/update={cfg.batch_steps})  seed={cfg.seed}")
 
-    train, _env = make_train(cfg, num_updates=n_updates)
+    train, _env = make_train(cfg, num_updates=n_updates, live_log=True)
     train = jax.jit(train)
+    print("live per-update log (return / entropy / loss) follows; "
+          "watch entropy — a fast drop toward 0 means exploration collapse:\n")
 
     t0 = time.perf_counter()
     out = jax.block_until_ready(train(jax.random.PRNGKey(cfg.seed)))
