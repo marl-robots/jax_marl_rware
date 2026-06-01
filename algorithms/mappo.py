@@ -167,8 +167,21 @@ def _host_log(upd, ret, ent, loss, vloss):
           f"value_loss {float(vloss):8.3f}", flush=True)
 
 
-def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
-               live_log: bool = False):
+def _setup(cfg: MAPPOConfig, live_log: bool = False):
+    """Build env + networks + the per-update step closure, shared by the
+    one-shot `make_train` and the resumable `make_resumable_train`.
+
+    Returns (env, actor, critic, tx, init_carry, update_step) where:
+      * init_carry(key) -> the training carry, a flat pytree
+            (params, target_critic, opt_state, welford, key)
+        so it serialises cleanly for checkpointing.
+      * update_step(carry, upd_idx) -> (carry, metrics)  [scan-compatible]
+
+    `live_log` fires a cheap per-update stdout print via an unordered
+    io_callback. Checkpointing + CSV logging are NOT done here: the resumable
+    driver runs `train_from` in chunks and writes them from the main thread
+    between chunks (orbax wants to be driven from the main thread).
+    """
     env_cfg = make_config(cfg.size, cfg.n_agents, cfg.difficulty)
     env = Warehouse(env_cfg)
     N = cfg.n_agents
@@ -178,7 +191,6 @@ def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
     central_dim = obs_dim * N
     T = cfg.time_limit
     H = cfg.hidden_dim
-    n_updates = cfg.num_updates if num_updates is None else num_updates
 
     actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain)
     critic = CriticRNN(H, cfg.orthogonal_gain)
@@ -193,7 +205,7 @@ def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
         rep = jnp.broadcast_to(cat[:, :, None, :], (T, E, N, N * obs_dim))
         return rep.reshape(T, B, N * obs_dim)
 
-    def train(key):
+    def init_carry(key):
         key, ka, kc = jax.random.split(key, 3)
         actor_params = actor.init(ka, h0(), (jnp.zeros((1, B, obs_dim)), zeros_BT(1)))
         critic_params = critic.init(kc, h0(), (jnp.zeros((1, B, central_dim)), zeros_BT(1)))
@@ -201,68 +213,112 @@ def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
         target_critic = critic_params
         opt_state = tx.init(params)
         welford = (jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.array(0.0))
+        return (params, target_critic, opt_state, welford, key)
 
-        def update_step(carry, upd_idx):
-            params, target_critic, opt_state, welford, key = carry
-            key, kreset, krun = jax.random.split(key, 3)
+    def update_step(carry, upd_idx):
+        params, target_critic, opt_state, welford, key = carry
+        key, kreset, krun = jax.random.split(key, 3)
 
-            states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
+        states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
-            # ---- rollout: one full episode, hidden starts at zeros ----
-            def rollout_step(rc, _):
-                states, obs, h_actor, welford, key = rc
-                key, ksamp = jax.random.split(key)
-                obs_flat = obs.reshape(B, obs_dim)
-                h_actor, dist = actor.apply(
-                    params["actor"], h_actor, (obs_flat[None], zeros_BT(1))
-                )
-                actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B]
-                actions = actions_flat.reshape(E, N)
-                nstates, nobs, rewards, done, _ = jax.vmap(env.step)(states, actions)
-                welford, rstd = _welford_standardise(welford, rewards)
-                return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards)
-
-            init = (states, obs, h0(), welford, krun)
-            (states, *_unused, welford, _), traj = jax.lax.scan(
-                rollout_step, init, None, length=T
+        # ---- rollout: one full episode, hidden starts at zeros ----
+        def rollout_step(rc, _):
+            states, obs, h_actor, welford, key = rc
+            key, ksamp = jax.random.split(key)
+            obs_flat = obs.reshape(B, obs_dim)
+            h_actor, dist = actor.apply(
+                params["actor"], h_actor, (obs_flat[None], zeros_BT(1))
             )
-            obs_t, act_t, rstd_t, rraw_t = traj  # [T,E,N,*]
+            actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B]
+            actions = actions_flat.reshape(E, N)
+            nstates, nobs, rewards, done, _ = jax.vmap(env.step)(states, actions)
+            welford, rstd = _welford_standardise(welford, rewards)
+            return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards)
 
-            batch = {
-                "obs_flat_T": obs_t.reshape(T, B, obs_dim),
-                "act_flat_T": act_t.reshape(T, B),
-                "central_T": _central(obs_t),
-                "rstd_TEN": rstd_t,
-                "dones_TEN": jnp.zeros((T, E, N)),  # fresh full episode -> no terminations
-            }
-            params, target_critic, opt_state, diag = mappo_update(
-                actor, critic, tx, cfg, params, target_critic, opt_state, batch
-            )
-
-            # team episode return (sum over agents, mean over envs) to match
-            # marlbase's logged `mean_episode_returns`.
-            ep_return = rraw_t.sum(axis=0).sum(-1).mean()
-            metrics = {
-                "episode_return": ep_return,
-                "loss": diag["epoch_loss"][-1],
-                "actor_loss": diag["epoch_actor_loss"][-1],
-                "value_loss": diag["epoch_value_loss"][-1],
-                "entropy": diag["epoch_entropy"][-1],
-                "reward_std_mean": rstd_t.mean(),
-            }
-            if live_log:
-                io_callback(
-                    _host_log, None, upd_idx, metrics["episode_return"],
-                    metrics["entropy"], metrics["loss"], metrics["value_loss"],
-                    ordered=False,
-                )
-            carry = (params, target_critic, opt_state, welford, key)
-            return carry, metrics
-
-        init_carry = (params, target_critic, opt_state, welford, key)
-        carry, metrics = jax.lax.scan(
-            update_step, init_carry, jnp.arange(n_updates), length=n_updates
+        init = (states, obs, h0(), welford, krun)
+        (states, *_unused, welford, _), traj = jax.lax.scan(
+            rollout_step, init, None, length=T
         )
-        return {"params": carry[0], "metrics": metrics}
+        obs_t, act_t, rstd_t, rraw_t = traj  # [T,E,N,*]
+
+        batch = {
+            "obs_flat_T": obs_t.reshape(T, B, obs_dim),
+            "act_flat_T": act_t.reshape(T, B),
+            "central_T": _central(obs_t),
+            "rstd_TEN": rstd_t,
+            "dones_TEN": jnp.zeros((T, E, N)),  # fresh full episode -> no terminations
+        }
+        params, target_critic, opt_state, diag = mappo_update(
+            actor, critic, tx, cfg, params, target_critic, opt_state, batch
+        )
+
+        # team episode return (sum over agents, mean over envs) to match
+        # marlbase's logged `mean_episode_returns`.
+        ep_return = rraw_t.sum(axis=0).sum(-1).mean()
+        metrics = {
+            "episode_return": ep_return,
+            "loss": diag["epoch_loss"][-1],
+            "actor_loss": diag["epoch_actor_loss"][-1],
+            "value_loss": diag["epoch_value_loss"][-1],
+            "entropy": diag["epoch_entropy"][-1],
+            "reward_std_mean": rstd_t.mean(),
+        }
+        carry = (params, target_critic, opt_state, welford, key)
+        if live_log:
+            io_callback(
+                _host_log, None, upd_idx, metrics["episode_return"],
+                metrics["entropy"], metrics["loss"], metrics["value_loss"],
+                ordered=False,
+            )
+        return carry, metrics
+
+    return env, actor, critic, tx, init_carry, update_step
+
+
+def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
+               live_log: bool = False):
+    """One-shot trainer: the whole run compiled as a single scan (no resume)."""
+    env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
+    n_updates = cfg.num_updates if num_updates is None else num_updates
+
+    def train(key):
+        carry = init_carry(key)
+        carry, metrics = jax.lax.scan(
+            update_step, carry, jnp.arange(n_updates), length=n_updates
+        )
+        return {"params": carry[0], "metrics": metrics, "carry": carry}
 
     return train, env
+
+
+def make_resumable_train(cfg: MAPPOConfig, live_log: bool = False):
+    """Resumable trainer driven in chunks by a host loop.
+
+    Each `train_from` call is a fully-fused `lax.scan` over `n` updates (full
+    speed within the chunk). The host loop runs it chunk-by-chunk and, between
+    chunks (main thread), does the orbax checkpoint save (keep-best +
+    keep-last-N) and CSV logging. Killing the process and restarting with the
+    last checkpoint loses at most one chunk of updates. Returns a dict:
+      env, actor, critic        -- reused for evaluation / rendering
+      init_carry(key) -> carry
+      train_from(carry, base_upd, n) -> (carry, metrics_stacked)
+          base_upd = absolute index of the first update (so the live log
+          reports true global update numbers across a resume); n is static
+          (the scan length -> recompiles only when the chunk size changes, so
+          pick a chunk size that divides the run to compile exactly once).
+    """
+    env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
+
+    @functools.partial(jax.jit, static_argnums=(2,))
+    def train_from(carry, base_upd, n):
+        idxs = base_upd + jnp.arange(n)
+        carry, metrics = jax.lax.scan(update_step, carry, idxs, length=n)
+        return carry, metrics
+
+    return {
+        "env": env,
+        "actor": actor,
+        "critic": critic,
+        "init_carry": init_carry,
+        "train_from": train_from,
+    }

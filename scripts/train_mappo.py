@@ -1,23 +1,33 @@
-"""Train MAPPO on the JAX RWARE env.
+"""Train MAPPO on the JAX RWARE env, with orbax checkpointing + resume.
+
+Training runs as fully-fused `lax.scan` chunks (full speed within a chunk). A
+host loop drives the chunks and, between them (main thread), writes per-update
+CSV metrics and an orbax checkpoint with keep-best (by EMA-smoothed return, so a
+late collapse never loses the peak) + keep-last-N. Kill any time and rerun with
+--resume to continue from the latest checkpoint (losing at most one chunk).
 
 Defaults to a short smoke run; pass --total-steps 20000000 for the full proven
 run (rware-tiny-4ag, parallel_envs=10, time_limit=500, seed=2).
 
 Examples (WSL, conda env jax_env_1):
-    python -m scripts.train_mappo --updates 20          # quick smoke
-    python -m scripts.train_mappo --total-steps 20000000
+    python -m scripts.train_mappo --updates 20             # quick smoke
+    python -m scripts.train_mappo --total-steps 20000000   # full proven run
+    python -m scripts.train_mappo --total-steps 20000000 --resume   # continue
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import time
 
 import jax
 import numpy as np
 
+from algorithms.checkpoint import CheckpointManager, has_checkpoint
 from algorithms.config import MAPPOConfig
-from algorithms.mappo import make_train
+from algorithms.mappo import make_resumable_train
+from algorithms.metrics import CSVLogger
 
 
 def main():
@@ -38,6 +48,23 @@ def main():
                     help="override Adam learning rate (raise for large batch)")
     ap.add_argument("--num-epochs", type=int, default=None,
                     help="override PPO epochs per update (more grad steps/update)")
+    ap.add_argument("--run-dir", default=None,
+                    help="dir for checkpoints/ + results.csv "
+                         "(default runs/<env>_seed<seed>)")
+    ap.add_argument("--checkpoint-every", type=int, default=100,
+                    help="updates per chunk = save cadence (pick a divisor of the "
+                         "run to compile exactly once)")
+    ap.add_argument("--max-to-keep", type=int, default=5,
+                    help="orbax keep-last-N (best is always retained too)")
+    ap.add_argument("--ema-decay", type=float, default=0.99,
+                    help="EMA decay for the smoothed return used by keep-best")
+    ap.add_argument("--resume", action="store_true",
+                    help="resume from a checkpoint in --run-dir if present")
+    ap.add_argument("--resume-from", default="latest",
+                    help="which checkpoint to resume: 'latest', 'best', or a step "
+                         "number (requires --resume)")
+    ap.add_argument("--no-live-log", action="store_true",
+                    help="disable the per-update stdout live log")
     args = ap.parse_args()
 
     overrides = {}
@@ -59,34 +86,102 @@ def main():
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
+    run_dir = args.run_dir or os.path.join(
+        "runs", f"{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
+    csv_path = os.path.join(run_dir, "results.csv")
+    batch_steps = cfg.batch_steps
+    chunk = max(1, args.checkpoint_every)
+
     print(f"env=rware-{cfg.size}-{cfg.n_agents}ag  parallel_envs={cfg.parallel_envs} "
           f"time_limit={cfg.time_limit}  updates={n_updates}  "
-          f"(steps/update={cfg.batch_steps})  seed={cfg.seed}")
+          f"(steps/update={batch_steps})  seed={cfg.seed}")
+    print(f"run-dir={run_dir}  chunk={chunk} updates/save  max_to_keep={args.max_to_keep}")
+    if n_updates % chunk != 0:
+        print(f"  note: {n_updates} not divisible by chunk {chunk}; the final "
+              f"short chunk triggers one extra XLA compile.")
 
-    train, _env = make_train(cfg, num_updates=n_updates, live_log=True)
-    train = jax.jit(train)
-    print("live per-update log (return / entropy / loss) follows; "
-          "watch entropy — a fast drop toward 0 means exploration collapse:\n")
+    mgr = CheckpointManager(run_dir, max_to_keep=args.max_to_keep)
+    mgr.save_config(cfg)
+    trainer = make_resumable_train(cfg, live_log=not args.no_live_log)
 
+    # ---- init or resume ----
+    key = jax.random.PRNGKey(cfg.seed)
+    carry = trainer["init_carry"](key)  # also the target structure for restore
+    resume = args.resume and has_checkpoint(run_dir)
+    start = 0
+    if resume:
+        sel = args.resume_from.lower()
+        if sel == "latest":
+            step = mgr.latest_step()
+        elif sel == "best":
+            step = mgr.best_step()
+        else:
+            step = int(args.resume_from)
+            if step not in mgr.all_steps():
+                raise SystemExit(
+                    f"step {step} not in saved steps {mgr.all_steps()}")
+        carry = mgr.restore(step, carry)
+        start = int(step)
+        print(f"resumed from checkpoint step {start} ({sel}) "
+              f"({start * batch_steps:,} env steps)")
+
+    logger = CSVLogger(csv_path, resume=resume)
+
+    if start >= n_updates:
+        print(f"nothing to do: start={start} >= n_updates={n_updates}")
+        logger.close()
+        mgr.wait()
+        return
+
+    if not args.no_live_log:
+        print("live per-update log (return / entropy / loss) follows; "
+              "watch entropy — a fast drop toward 0 means exploration collapse:\n")
+
+    # ---- chunked training loop (orbax saves between chunks, main thread) ----
+    ema = None
     t0 = time.perf_counter()
-    out = jax.block_until_ready(train(jax.random.PRNGKey(cfg.seed)))
+    upd = start
+    while upd < n_updates:
+        k = min(chunk, n_updates - upd)
+        carry, metrics = trainer["train_from"](carry, upd, k)
+        carry = jax.block_until_ready(carry)
+
+        rets = np.asarray(metrics["episode_return"])
+        ent = np.asarray(metrics["entropy"])
+        loss = np.asarray(metrics["loss"])
+        aloss = np.asarray(metrics["actor_loss"])
+        vloss = np.asarray(metrics["value_loss"])
+        rstd = np.asarray(metrics["reward_std_mean"])
+        for i in range(k):
+            done_count = upd + i + 1
+            if ema is None:
+                ema = float(rets[i])
+            else:
+                ema = args.ema_decay * ema + (1.0 - args.ema_decay) * float(rets[i])
+            logger.log({
+                "environment_steps": done_count * batch_steps,
+                "updates": done_count,
+                "mean_episode_returns": float(rets[i]),
+                "entropy": float(ent[i]),
+                "loss": float(loss[i]),
+                "actor_loss": float(aloss[i]),
+                "value_loss": float(vloss[i]),
+                "reward_std_mean": float(rstd[i]),
+            })
+        upd += k
+        mgr.save(upd, carry, smoothed_return=ema)
+
+    mgr.wait()
+    logger.close()
     dt = time.perf_counter() - t0
 
-    m = out["metrics"]
-    rets = np.array(m["episode_return"])
-    total_env_steps = n_updates * cfg.batch_steps
-    print(f"\ncompiled+ran {n_updates} updates ({total_env_steps:,} env steps) "
+    ran = n_updates - start
+    total_env_steps = ran * batch_steps
+    best = mgr.best_step()
+    print(f"\nran {ran} updates ({total_env_steps:,} env steps) "
           f"in {dt:.1f}s  ({total_env_steps / dt:,.0f} steps/s)")
-    print("episode_return: first={:.3f}  last={:.3f}  max={:.3f}".format(
-        float(rets[0]), float(rets[-1]), float(rets.max())))
-
-    # coarse curve
-    k = max(1, len(rets) // 10)
-    idxs = list(range(0, len(rets), k))
-    print("\nupdate :  return   loss     value_loss  entropy")
-    for i in idxs:
-        print(f"{i:6d} : {float(rets[i]):7.3f}  {float(m['loss'][i]):7.3f}  "
-              f"{float(m['value_loss'][i]):9.3f}  {float(m['entropy'][i]):7.3f}")
+    print(f"checkpoints -> {os.path.join(run_dir, 'checkpoints')}  "
+          f"(latest={mgr.latest_step()}, best={best})   metrics -> {csv_path}")
 
 
 if __name__ == "__main__":
