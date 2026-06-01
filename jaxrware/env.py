@@ -156,10 +156,11 @@ class Warehouse:
         ga2, gs2 = self._grids(state)
         in_queue = state.in_queue
         delivered_any = jnp.array(False)
+        deliveries = jnp.zeros((N,), jnp.int32)  # per-agent delivery count (commentary)
         key = state.key
 
         def deliver_at(carry, g):
-            in_queue, rewards, has_delivered, delivered_any, key, gs2, ga2 = carry
+            in_queue, rewards, has_delivered, delivered_any, deliveries, key, gs2, ga2 = carry
             gx, gy = g
             shelf_id = gs2[gy, gx]
             agent_id = ga2[gy, gx]
@@ -191,13 +192,16 @@ class Warehouse:
                     jnp.where(is_delivery, True, has_delivered[aidx])
                 )
             rewards = rewards + add
+            deliveries = deliveries.at[aidx].add(
+                jnp.where(is_delivery, 1, 0).astype(jnp.int32)
+            )
             delivered_any = delivered_any | is_delivery
-            return (in_queue, rewards, has_delivered, delivered_any, key, gs2, ga2), None
+            return (in_queue, rewards, has_delivered, delivered_any, deliveries, key, gs2, ga2), None
 
-        carry0 = (in_queue, rewards, has_delivered, delivered_any, key, gs2, ga2)
+        carry0 = (in_queue, rewards, has_delivered, delivered_any, deliveries, key, gs2, ga2)
         for gi in range(self.n_goals):
             carry0, _ = deliver_at(carry0, (self.goal_x[gi], self.goal_y[gi]))
-        in_queue, rewards, has_delivered, delivered_any, key, _, _ = carry0
+        in_queue, rewards, has_delivered, delivered_any, deliveries, key, _, _ = carry0
 
         # --- counters / termination ---
         inactive = jnp.where(delivered_any, 0, state.inactive_count + 1)
@@ -211,5 +215,17 @@ class Warehouse:
             step_count=step_count, inactive_count=inactive, key=key,
         )
         obs = self._obs(state)
-        info = {"delivered": delivered_any}
+        # ---- behavioral signals (commentary; no effect on dynamics) ----
+        # forward-blocked = tried to step forward, lost movement contention, and
+        # was not a voluntary carry-into-shelf cancel -> a collision/contention proxy.
+        forward_blocked = (actions == Action.FORWARD) & (~moves) & (~_cancelled)
+        noop = actions == Action.NOOP
+        info = {
+            "delivered": delivered_any,        # scalar bool (kept for compatibility)
+            "deliveries": deliveries,          # [N] int32, per-agent deliveries this step
+            "forward_blocked": forward_blocked,  # [N] bool
+            "noop": noop,                      # [N] bool
+            "pickup": pickup,                  # [N] bool
+            "drop": drop,                      # [N] bool
+        }
         return state, obs, rewards, done, info

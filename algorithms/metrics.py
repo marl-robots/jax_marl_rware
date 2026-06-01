@@ -21,6 +21,17 @@ COLUMNS = [
     "actor_loss",
     "value_loss",
     "reward_std_mean",
+    # behavioral signals (commentary)
+    "deliveries",
+    "block_rate",
+    "idle_rate",
+    "pickup_rate",
+    "deliveries_early",
+    "deliveries_mid",
+    "deliveries_late",
+    "block_early",
+    "block_mid",
+    "block_late",
 ]
 
 

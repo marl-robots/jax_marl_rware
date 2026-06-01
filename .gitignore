@@ -10,3 +10,6 @@ venv/
 build/
 dist/
 *.log
+
+# training outputs (checkpoints, results.csv, config.json)
+runs/

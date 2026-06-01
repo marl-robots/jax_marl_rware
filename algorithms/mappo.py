@@ -160,11 +160,15 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     return params, target_critic, opt_state, diagnostics
 
 
-def _host_log(upd, ret, ent, loss, vloss):
-    """Host-side live print, fired once per update via io_callback (cheap)."""
-    print(f"  update {int(upd):4d} | return {float(ret):8.3f} | "
-          f"entropy {float(ent):6.3f} | loss {float(loss):8.3f} | "
-          f"value_loss {float(vloss):8.3f}", flush=True)
+def _host_log(upd, ret, ent, deliveries, block_rate, idle_rate):
+    """Host-side live print, fired once per update via io_callback (cheap).
+
+    Shows the behavioral view used for watching progress: team return,
+    deliveries/episode, forward-block (contention) %, idle %, and entropy
+    (watch entropy — a fast drop toward 0 means exploration collapse)."""
+    print(f"  upd {int(upd):4d} | return {float(ret):8.3f} | "
+          f"deliv {float(deliveries):6.2f} | blocked {float(block_rate) * 100:4.1f}% | "
+          f"idle {float(idle_rate) * 100:4.1f}% | ent {float(ent):5.3f}", flush=True)
 
 
 def _setup(cfg: MAPPOConfig, live_log: bool = False):
@@ -231,15 +235,18 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             )
             actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B]
             actions = actions_flat.reshape(E, N)
-            nstates, nobs, rewards, done, _ = jax.vmap(env.step)(states, actions)
+            nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             welford, rstd = _welford_standardise(welford, rewards)
-            return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards)
+            sig = (info["deliveries"], info["forward_blocked"],
+                   info["noop"], info["pickup"], info["drop"])  # each [E,N]
+            return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards, *sig)
 
         init = (states, obs, h0(), welford, krun)
         (states, *_unused, welford, _), traj = jax.lax.scan(
             rollout_step, init, None, length=T
         )
-        obs_t, act_t, rstd_t, rraw_t = traj  # [T,E,N,*]
+        (obs_t, act_t, rstd_t, rraw_t,
+         deliv_t, blocked_t, noop_t, pickup_t, drop_t) = traj  # [T,E,N,*]
 
         batch = {
             "obs_flat_T": obs_t.reshape(T, B, obs_dim),
@@ -255,6 +262,14 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         # team episode return (sum over agents, mean over envs) to match
         # marlbase's logged `mean_episode_returns`.
         ep_return = rraw_t.sum(axis=0).sum(-1).mean()
+
+        # ---- behavioral aggregates (all in-graph; only per-update scalars leave
+        # the scan). team_per_ep sums over time + agents, means over envs; `frac`
+        # is the fraction of agent-steps. Episode is split into thirds to show how
+        # behavior shifts within the 500-step episode.
+        t1, t2 = T // 3, 2 * (T // 3)
+        team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).mean()
+        frac = lambda x: x.mean()
         metrics = {
             "episode_return": ep_return,
             "loss": diag["epoch_loss"][-1],
@@ -262,13 +277,24 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "value_loss": diag["epoch_value_loss"][-1],
             "entropy": diag["epoch_entropy"][-1],
             "reward_std_mean": rstd_t.mean(),
+            # behavioral signals
+            "deliveries": team_per_ep(deliv_t),
+            "block_rate": frac(blocked_t),
+            "idle_rate": frac(noop_t),
+            "pickup_rate": frac(pickup_t),
+            "deliveries_early": team_per_ep(deliv_t[:t1]),
+            "deliveries_mid": team_per_ep(deliv_t[t1:t2]),
+            "deliveries_late": team_per_ep(deliv_t[t2:]),
+            "block_early": frac(blocked_t[:t1]),
+            "block_mid": frac(blocked_t[t1:t2]),
+            "block_late": frac(blocked_t[t2:]),
         }
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
                 _host_log, None, upd_idx, metrics["episode_return"],
-                metrics["entropy"], metrics["loss"], metrics["value_loss"],
-                ordered=False,
+                metrics["entropy"], metrics["deliveries"], metrics["block_rate"],
+                metrics["idle_rate"], ordered=False,
             )
         return carry, metrics
 

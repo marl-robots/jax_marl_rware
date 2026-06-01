@@ -25,6 +25,7 @@ import jax
 import numpy as np
 
 from algorithms.checkpoint import CheckpointManager, has_checkpoint
+from algorithms.commentary import Narrator
 from algorithms.config import MAPPOConfig
 from algorithms.mappo import make_resumable_train
 from algorithms.metrics import CSVLogger
@@ -65,6 +66,8 @@ def main():
                          "number (requires --resume)")
     ap.add_argument("--no-live-log", action="store_true",
                     help="disable the per-update stdout live log")
+    ap.add_argument("--no-commentary", action="store_true",
+                    help="disable the per-chunk behavioral commentary (Layer 2)")
     args = ap.parse_args()
 
     overrides = {}
@@ -134,10 +137,12 @@ def main():
         return
 
     if not args.no_live_log:
-        print("live per-update log (return / entropy / loss) follows; "
-              "watch entropy — a fast drop toward 0 means exploration collapse:\n")
+        print("live per-update log (return / deliveries / blocked% / idle% / "
+              "entropy) follows; watch entropy — a fast drop toward 0 means "
+              "exploration collapse:\n")
 
     # ---- chunked training loop (orbax saves between chunks, main thread) ----
+    narrator = None if args.no_commentary else Narrator()
     ema = None
     t0 = time.perf_counter()
     upd = start
@@ -146,30 +151,43 @@ def main():
         carry, metrics = trainer["train_from"](carry, upd, k)
         carry = jax.block_until_ready(carry)
 
-        rets = np.asarray(metrics["episode_return"])
-        ent = np.asarray(metrics["entropy"])
-        loss = np.asarray(metrics["loss"])
-        aloss = np.asarray(metrics["actor_loss"])
-        vloss = np.asarray(metrics["value_loss"])
-        rstd = np.asarray(metrics["reward_std_mean"])
+        # all per-update metrics for this chunk, as np arrays of shape [k]
+        m = {key: np.asarray(val) for key, val in metrics.items()}
         for i in range(k):
             done_count = upd + i + 1
-            if ema is None:
-                ema = float(rets[i])
-            else:
-                ema = args.ema_decay * ema + (1.0 - args.ema_decay) * float(rets[i])
+            ret_i = float(m["episode_return"][i])
+            ema = ret_i if ema is None else (
+                args.ema_decay * ema + (1.0 - args.ema_decay) * ret_i)
             logger.log({
                 "environment_steps": done_count * batch_steps,
                 "updates": done_count,
-                "mean_episode_returns": float(rets[i]),
-                "entropy": float(ent[i]),
-                "loss": float(loss[i]),
-                "actor_loss": float(aloss[i]),
-                "value_loss": float(vloss[i]),
-                "reward_std_mean": float(rstd[i]),
+                "mean_episode_returns": ret_i,
+                "entropy": float(m["entropy"][i]),
+                "loss": float(m["loss"][i]),
+                "actor_loss": float(m["actor_loss"][i]),
+                "value_loss": float(m["value_loss"][i]),
+                "reward_std_mean": float(m["reward_std_mean"][i]),
+                "deliveries": float(m["deliveries"][i]),
+                "block_rate": float(m["block_rate"][i]),
+                "idle_rate": float(m["idle_rate"][i]),
+                "pickup_rate": float(m["pickup_rate"][i]),
+                "deliveries_early": float(m["deliveries_early"][i]),
+                "deliveries_mid": float(m["deliveries_mid"][i]),
+                "deliveries_late": float(m["deliveries_late"][i]),
+                "block_early": float(m["block_early"][i]),
+                "block_mid": float(m["block_mid"][i]),
+                "block_late": float(m["block_late"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
+
+        # Layer 2: one behavioral commentary block per chunk (host-side, between
+        # chunks -> no effect on the fused-scan rollout speed).
+        if narrator is not None:
+            stats = {key: float(m[key].mean()) for key in (
+                "episode_return", "deliveries", "block_rate", "idle_rate",
+                "deliveries_early", "deliveries_mid", "deliveries_late")}
+            print(narrator.chunk(upd, stats), flush=True)
 
     mgr.wait()
     logger.close()
