@@ -64,6 +64,37 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
     return loss, (actor_loss, value_loss, entropy.mean())
 
 
+def a2c_losses(returns, values, logp, entropy, *,
+               entropy_coef, value_loss_coef, filled=None):
+    """Pure A2C loss math, shaped [..., N] over the agent axis.
+
+    Transcribes marlbase ac/model.py:A2CNetwork.update exactly:
+      advantage  = returns - values
+      value_loss = (advantage**2).sum(-1)                       # sum over agents
+      actor_loss = -(logp * advantage.detach()).sum(-1) - entropy_coef*entropy.sum(-1)
+      loss       = actor_loss + value_loss_coef * value_loss
+    Reduced as (x * filled).sum() / filled.sum() when `filled` given, else a
+    plain mean. `returns` is treated as a constant (caller detaches it). Unlike
+    PPO there is no ratio/clip and no old_logp snapshot — a single grad step.
+    """
+    advantage = returns - values
+    value_loss_t = (advantage ** 2).sum(-1)
+
+    adv = jax.lax.stop_gradient(advantage)
+    actor_loss_t = -(logp * adv).sum(-1) - entropy_coef * entropy.sum(-1)
+
+    if filled is None:
+        value_loss = value_loss_t.mean()
+        actor_loss = actor_loss_t.mean()
+    else:
+        denom = filled.sum()
+        value_loss = (value_loss_t * filled).sum() / denom
+        actor_loss = (actor_loss_t * filled).sum() / denom
+
+    loss = actor_loss + value_loss_coef * value_loss
+    return loss, (actor_loss, value_loss, entropy.mean())
+
+
 def _welford_standardise(state, reward):
     """Streaming weighted Welford (weight=1) matching utils/wrappers.StandardiseReward.
 
@@ -85,12 +116,20 @@ def _welford_standardise(state, reward):
 
 
 def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch):
-    """One MAPPO update over a fixed batch — the exact path the trainer uses.
+    """One AC-family update over a fixed batch — the exact path the trainer uses.
+
+    Handles all four algorithms via `cfg.use_ppo`:
+      * PPO (use_ppo=True):  snapshot old log-probs, `cfg.num_epochs` epochs of
+        the clipped surrogate (`ppo_losses`).
+      * A2C (use_ppo=False): a single grad step of the policy-gradient loss
+        (`a2c_losses`); no old-logp snapshot, no clip.
+    The critic axis (independent vs centralised) is handled upstream by what the
+    caller packs into `batch["central_T"]` (own obs vs concat of all agents').
 
     `batch` is a dict of jnp arrays:
       obs_flat_T  [T, B, obs_dim]       (B = E*N, agents folded into batch)
       act_flat_T  [T, B]
-      central_T   [T, B, central_dim]
+      central_T   [T, B, critic_dim]    critic_dim = obs_dim*N (cent) or obs_dim (ind)
       rstd_TEN    [T, E, N]             standardised rewards
       dones_TEN   [T, E, N]             terminations (returns masking only)
     GRU hidden resets are always zeros within an update — marlbase's
@@ -126,10 +165,15 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         entropy = dist.entropy().reshape(T, E, N)
         _, values = critic.apply(p["critic"], h0(), (central_T, gru_resets))
         values = values.reshape(T, E, N)
-        return ppo_losses(
-            returns, values, logp, old_logp, entropy,
-            ppo_clip=cfg.ppo_clip, entropy_coef=cfg.entropy_coef,
-            value_loss_coef=cfg.value_loss_coef,
+        if cfg.use_ppo:
+            return ppo_losses(
+                returns, values, logp, old_logp, entropy,
+                ppo_clip=cfg.ppo_clip, entropy_coef=cfg.entropy_coef,
+                value_loss_coef=cfg.value_loss_coef,
+            )
+        return a2c_losses(
+            returns, values, logp, entropy,
+            entropy_coef=cfg.entropy_coef, value_loss_coef=cfg.value_loss_coef,
         )
 
     def epoch(carry, _):
@@ -139,8 +183,10 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         params = optax.apply_updates(params, updates)
         return (params, opt_state), (loss, *aux)
 
+    # PPO: num_epochs passes over the batch; A2C: a single grad step.
+    n_epochs = cfg.num_epochs if cfg.use_ppo else 1
     (params, opt_state), epoch_metrics = jax.lax.scan(
-        epoch, (params, opt_state), None, length=cfg.num_epochs
+        epoch, (params, opt_state), None, length=n_epochs
     )
 
     # ---- soft target-critic update (once, after epochs) ----
@@ -192,7 +238,8 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     E = cfg.parallel_envs
     B = E * N
     obs_dim = env.obs_dim
-    central_dim = obs_dim * N
+    # centralised critic sees the concat of all agents' obs; independent sees own.
+    critic_dim = obs_dim * N if cfg.centralised_critic else obs_dim
     T = cfg.time_limit
     H = cfg.hidden_dim
 
@@ -203,16 +250,21 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     h0 = lambda: ScannedGRU.initialize_carry(B, H)
     zeros_BT = lambda t: jnp.zeros((t, B))
 
-    def _central(obs_TENobs):
-        """[T,E,N,obs] -> [T, E*N, N*obs] (each agent gets the env's concat obs)."""
-        cat = obs_TENobs.reshape(T, E, N * obs_dim)
-        rep = jnp.broadcast_to(cat[:, :, None, :], (T, E, N, N * obs_dim))
-        return rep.reshape(T, B, N * obs_dim)
+    def _critic_input(obs_TENobs):
+        """Pack the critic input from per-agent obs [T,E,N,obs] -> [T,B,critic_dim].
+
+        Centralised: each agent gets the env's concat of all agents' obs
+        ([T,B,N*obs]). Independent: each agent gets its own obs ([T,B,obs])."""
+        if cfg.centralised_critic:
+            cat = obs_TENobs.reshape(T, E, N * obs_dim)
+            rep = jnp.broadcast_to(cat[:, :, None, :], (T, E, N, N * obs_dim))
+            return rep.reshape(T, B, N * obs_dim)
+        return obs_TENobs.reshape(T, B, obs_dim)
 
     def init_carry(key):
         key, ka, kc = jax.random.split(key, 3)
         actor_params = actor.init(ka, h0(), (jnp.zeros((1, B, obs_dim)), zeros_BT(1)))
-        critic_params = critic.init(kc, h0(), (jnp.zeros((1, B, central_dim)), zeros_BT(1)))
+        critic_params = critic.init(kc, h0(), (jnp.zeros((1, B, critic_dim)), zeros_BT(1)))
         params = {"actor": actor_params, "critic": critic_params}
         target_critic = critic_params
         opt_state = tx.init(params)
@@ -251,7 +303,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         batch = {
             "obs_flat_T": obs_t.reshape(T, B, obs_dim),
             "act_flat_T": act_t.reshape(T, B),
-            "central_T": _central(obs_t),
+            "central_T": _critic_input(obs_t),
             "rstd_TEN": rstd_t,
             "dones_TEN": jnp.zeros((T, E, N)),  # fresh full episode -> no terminations
         }

@@ -33,6 +33,9 @@ from algorithms.metrics import CSVLogger
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--algo", default="mappo",
+                    choices=["ia2c", "ippo", "maa2c", "mappo"],
+                    help="AC-family algorithm: {ind,cent} critic x {a2c,ppo} update")
     ap.add_argument("--size", default="tiny")
     ap.add_argument("--n-agents", type=int, default=4)
     ap.add_argument("--difficulty", default="normal")
@@ -80,7 +83,8 @@ def main():
     if args.num_epochs is not None:
         overrides["num_epochs"] = args.num_epochs
 
-    cfg = MAPPOConfig(
+    cfg = MAPPOConfig.from_algo(
+        args.algo,
         size=args.size, n_agents=args.n_agents, difficulty=args.difficulty,
         seed=args.seed,
         total_steps=args.total_steps if args.total_steps is not None
@@ -90,11 +94,13 @@ def main():
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
     run_dir = args.run_dir or os.path.join(
-        "runs", f"{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
+        "runs", f"{cfg.algo}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
     chunk = max(1, args.checkpoint_every)
 
+    print(f"algo={cfg.algo} (centralised_critic={cfg.centralised_critic}, "
+          f"use_ppo={cfg.use_ppo})")
     print(f"env=rware-{cfg.size}-{cfg.n_agents}ag  parallel_envs={cfg.parallel_envs} "
           f"time_limit={cfg.time_limit}  updates={n_updates}  "
           f"(steps/update={batch_steps})  seed={cfg.seed}")
