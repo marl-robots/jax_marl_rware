@@ -13,3 +13,6 @@ dist/
 
 # training outputs (checkpoints, results.csv, config.json)
 runs/
+
+# editor settings
+.vscode/
