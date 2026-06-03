@@ -52,6 +52,9 @@ def main():
                     help="override Adam learning rate (raise for large batch)")
     ap.add_argument("--num-epochs", type=int, default=None,
                     help="override PPO epochs per update (more grad steps/update)")
+    ap.add_argument("--no-rnn", action="store_true",
+                    help="feedforward network instead of the GRU (faster, no BPTT; "
+                         "reactive policy). Tags the run-dir with _fc.")
     ap.add_argument("--run-dir", default=None,
                     help="dir for checkpoints/ + results.csv "
                          "(default runs/<env>_seed<seed>)")
@@ -82,6 +85,8 @@ def main():
         overrides["lr"] = args.lr
     if args.num_epochs is not None:
         overrides["num_epochs"] = args.num_epochs
+    if args.no_rnn:
+        overrides["use_rnn"] = False
 
     cfg = MAPPOConfig.from_algo(
         args.algo,
@@ -93,14 +98,15 @@ def main():
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
+    net_tag = "" if cfg.use_rnn else "_fc"
     run_dir = args.run_dir or os.path.join(
-        "runs", f"{cfg.algo}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
+        "runs", f"{cfg.algo}{net_tag}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
     chunk = max(1, args.checkpoint_every)
 
     print(f"algo={cfg.algo} (centralised_critic={cfg.centralised_critic}, "
-          f"use_ppo={cfg.use_ppo})")
+          f"use_ppo={cfg.use_ppo}, use_rnn={cfg.use_rnn})")
     print(f"env=rware-{cfg.size}-{cfg.n_agents}ag  parallel_envs={cfg.parallel_envs} "
           f"time_limit={cfg.time_limit}  updates={n_updates}  "
           f"(steps/update={batch_steps})  seed={cfg.seed}")

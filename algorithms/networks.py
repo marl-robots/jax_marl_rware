@@ -50,41 +50,59 @@ class ScannedGRU(nn.Module):
 
 
 class ActorRNN(nn.Module):
-    """Shared actor: obs -> Dense -> ReLU -> GRU -> Dense(logits) -> Categorical."""
+    """Shared actor: obs -> Dense -> ReLU -> [GRU | Dense->ReLU] -> Dense(logits).
+
+    use_rnn=True  (default): Dense -> ReLU -> GRU -> Dense  (recurrent, marlbase RNN).
+    use_rnn=False: Dense -> ReLU -> Dense -> ReLU -> Dense  (feedforward; the GRU
+    is replaced by a second hidden layer, no recurrence). `hidden` is passed
+    through untouched in the FC case so the carry plumbing is unchanged.
+    """
 
     num_actions: int
     hidden_dim: int = 128
     orthogonal_gain: float = 2.0 ** 0.5
+    use_rnn: bool = True
 
     @nn.compact
     def __call__(self, hidden, x):
         obs, dones = x  # obs: [T, B, obs_dim], dones: [T, B]
-        embed = nn.Dense(self.hidden_dim)(obs)  # default init (lecun_normal)
-        embed = nn.relu(embed)
-        hidden, gru_out = ScannedGRU(self.hidden_dim)(hidden, (embed, dones))
+        ortho = nn.initializers.orthogonal(self.orthogonal_gain)
+        if self.use_rnn:
+            # marlbase RNNNetwork: default init on first layer + GRU, orthogonal
+            # only on the final layer.
+            embed = nn.relu(nn.Dense(self.hidden_dim)(obs))  # default (lecun_normal)
+            hidden, feat = ScannedGRU(self.hidden_dim)(hidden, (embed, dones))
+        else:
+            # marlbase FCNetwork: orthogonal (gain sqrt(2)) on EVERY layer.
+            embed = nn.relu(nn.Dense(self.hidden_dim, kernel_init=ortho)(obs))
+            feat = nn.relu(nn.Dense(self.hidden_dim, kernel_init=ortho)(embed))
         logits = nn.Dense(
-            self.num_actions,
-            kernel_init=nn.initializers.orthogonal(self.orthogonal_gain),
-            bias_init=nn.initializers.zeros,
-        )(gru_out)
+            self.num_actions, kernel_init=ortho, bias_init=nn.initializers.zeros,
+        )(feat)
         return hidden, distrax.Categorical(logits=logits)
 
 
 class CriticRNN(nn.Module):
-    """Shared centralised critic: global obs -> Dense -> ReLU -> GRU -> Dense(1)."""
+    """Shared critic: obs -> Dense -> ReLU -> [GRU | Dense->ReLU] -> Dense(1).
+
+    use_rnn toggles recurrent vs feedforward exactly as in ActorRNN.
+    """
 
     hidden_dim: int = 128
     orthogonal_gain: float = 2.0 ** 0.5
+    use_rnn: bool = True
 
     @nn.compact
     def __call__(self, hidden, x):
         obs, dones = x  # obs: [T, B, central_dim], dones: [T, B]
-        embed = nn.Dense(self.hidden_dim)(obs)
-        embed = nn.relu(embed)
-        hidden, gru_out = ScannedGRU(self.hidden_dim)(hidden, (embed, dones))
+        ortho = nn.initializers.orthogonal(self.orthogonal_gain)
+        if self.use_rnn:
+            embed = nn.relu(nn.Dense(self.hidden_dim)(obs))  # default (lecun_normal)
+            hidden, feat = ScannedGRU(self.hidden_dim)(hidden, (embed, dones))
+        else:
+            embed = nn.relu(nn.Dense(self.hidden_dim, kernel_init=ortho)(obs))
+            feat = nn.relu(nn.Dense(self.hidden_dim, kernel_init=ortho)(embed))
         value = nn.Dense(
-            1,
-            kernel_init=nn.initializers.orthogonal(self.orthogonal_gain),
-            bias_init=nn.initializers.zeros,
-        )(gru_out)
+            1, kernel_init=ortho, bias_init=nn.initializers.zeros,
+        )(feat)
         return hidden, jnp.squeeze(value, axis=-1)

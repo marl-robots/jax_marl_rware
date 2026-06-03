@@ -243,8 +243,8 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     T = cfg.time_limit
     H = cfg.hidden_dim
 
-    actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain)
-    critic = CriticRNN(H, cfg.orthogonal_gain)
+    actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain, cfg.use_rnn)
+    critic = CriticRNN(H, cfg.orthogonal_gain, cfg.use_rnn)
     tx = optax.adam(cfg.lr)  # grad_clip=false in the proven config
 
     h0 = lambda: ScannedGRU.initialize_carry(B, H)
