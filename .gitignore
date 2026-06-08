@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+*.so
+.env
+.venv/
+venv/
+build/
+dist/
+*.log
+
+# training outputs (checkpoints, results.csv, config.json)
+runs/
+
+# editor settings
+.vscode/

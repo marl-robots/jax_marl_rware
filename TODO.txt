@@ -1,0 +1,60 @@
+that what we have:
+environment_steps,
+updates
+mean_episode_return
+mean_loss
+mean_actor_loss
+mean_value_loss
+mean_entropy
+reward_std_mean": rstd_t.mean(),
+##behavioral signals
+mean_block_rate
+mean_idle_rate
+mean_pickup_rate
+mean_deliveries
+mean_deliveries_early"
+mean_deliveries_mid
+mean_deliveries_late
+mean_block_early
+mean_block_mid
+mean_block_late
+
+need to add:
+if fully shared network all aggregete one agent=one NN
+if independente network each agent have own network mean_loss,mean_actor_loss,mean_value_loss,mean_entropy
+need to be per agent for exmple agent_i/mean_loss
+epsilon,only for off policy algos
+already have:
+mean_collisions,=mean_block_rate
+mean_idle_steps,=mean_idle_rate
+mean_pickups,=mean_pickup_rate
+----------------
+out from env:
+DONE: mean_distance_traveled,
+    in plot**.py:
+    on each step for each agents self.distance_traveled += abs(cur_x - prev_x) + abs(cur_y - prev_y)
+    will do:
+    add inside env.step to info env.reset distance_traveled=0 update_step
+
+NO NEED:mean_episode_length, constent time_limit: int = 500
+DONE: mean_episode_time, in seconds warp rollout_step
+--------
+DONE: mean_fps,fps = mean_step_count / mean_step_time
+DONE: mean_step_count, count how many times env.step called 
+DONE: mean_step_time, step_time = end - start delta for one env.step
+        
+        
+DONE: mean_success,
+    in plot**.py:
+    count how many times on each step num_deliveries >= required_deliveries
+    will do:
+    add to metrics line 329~ 
+DONE: mean_success_rate, mean_success%
+
+DONE: create date/time to runs folder
+
+DONE: add std/mean to all relvante vairables and stack in results.csv
+
+DONE: add total_updates to log line
+
+DONE: in plot add mean as line std as warrper and vise reverse
