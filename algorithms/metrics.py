@@ -38,29 +38,6 @@ COLUMNS = [
     "mean_block_early",
     "mean_block_mid",
     "mean_block_late",
-
-    "std_episode_returns",
-    "std_entropy",
-    "std_loss",
-    "std_actor_loss",
-    "std_value_loss",
-    "std_reward_std",
-    #std_ behavioral signals (commentary)
-    "std_success",
-    "std_success_rate",
-    "std_step_count",
-    "std_FPS",
-    "std_deliveries",
-    "std_block",
-    "std_block_rate",
-    "std_idle_rate",
-    "std_pickup_rate",
-    "std_deliveries_early",
-    "std_deliveries_mid",
-    "std_deliveries_late",
-    "std_block_early",
-    "std_block_mid",
-    "std_block_late",
 ]
       
 

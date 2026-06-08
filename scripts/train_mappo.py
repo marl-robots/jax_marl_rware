@@ -188,7 +188,7 @@ def main():
                 "mean_episode_returns": float(m["mean_episode_return"][i]),
                 
                 "mean_step_count":int(m["mean_step_count"][i]),
-                "mean_FPS": float((m["mean_step_count"][i])/(m["mean_step_time"][i])),
+                "mean_FPS": 0,
                 "mean_success": float(m["mean_success"][i]),
                 "mean_success_rate": float(m["mean_success_rate"][i]),
              
@@ -209,29 +209,6 @@ def main():
                 "mean_block_mid": float(m["mean_block_mid"][i]),
                 "mean_block_late": float(m["mean_block_late"][i]),
 
-                "std_episode_returns": float(m["std_episode_return"][i]),
-                
-                "std_step_count":int(m["std_step_count"][i]),
-                "std_FPS": float((m["std_step_count"][i])/(m["std_step_time"][i])),
-                "std_success": float(m["std_success"][i]),
-                "std_success_rate": float(m["std_success_rate"][i]),
-                
-                "std_entropy": float(m["std_entropy"][i]),
-                "std_loss": float(m["std_loss"][i]),
-                "std_actor_loss": float(m["std_actor_loss"][i]),
-                "std_value_loss": float(m["std_value_loss"][i]),
-                "std_reward_std": float(m["std_reward_std"][i]),
-                "std_deliveries": float(m["std_deliveries"][i]),
-                "std_block": float(m["std_block"][i]),
-                "std_block_rate": float(m["std_block_rate"][i]),
-                "std_idle_rate": float(m["std_idle_rate"][i]),
-                "std_pickup_rate": float(m["std_pickup_rate"][i]),
-                "std_deliveries_early": float(m["std_deliveries_early"][i]),
-                "std_deliveries_mid": float(m["std_deliveries_mid"][i]),
-                "std_deliveries_late": float(m["std_deliveries_late"][i]),
-                "std_block_early": float(m["std_block_early"][i]),
-                "std_block_mid": float(m["std_block_mid"][i]),
-                "std_block_late": float(m["std_block_late"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)

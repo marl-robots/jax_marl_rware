@@ -57,24 +57,14 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
         mean_value_loss = value_loss_t.mean()
         mean_actor_loss = actor_loss_t.mean()
 
-        #var_value_loss = ((value_loss_t - mean_value_loss)**2).sum() / value_loss_t.size
-        std_value_loss = value_loss_t.std()
-        #var_actor_loss = ((actor_loss_t - mean_actor_loss)**2).sum() / value_loss_t.size
-        std_actor_loss = actor_loss_t.std()
     else:
         denom = filled.sum()
         mean_value_loss = (value_loss_t * filled).sum() / denom
         mean_actor_loss = (actor_loss_t * filled).sum() / denom
 
-        var_value_loss = ((value_loss_t - mean_value_loss)**2 * filled).sum() / denom
-        std_value_loss = var_value_loss.sqrt()
-        var_actor_loss = ((actor_loss_t - mean_actor_loss)**2 * filled).sum() / denom
-        std_actor_loss = var_actor_loss.sqrt()
-
 
     mean_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    std_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean(),std_loss,std_actor_loss, std_value_loss, entropy.std())
+    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean())
 
 def a2c_losses(returns, values, logp, entropy, *,
                entropy_coef, value_loss_coef, filled=None):
@@ -98,24 +88,15 @@ def a2c_losses(returns, values, logp, entropy, *,
     if filled is None:
         mean_value_loss = value_loss_t.mean()
         mean_actor_loss = actor_loss_t.mean()
-        
-        std_value_loss = value_loss_t.std()
-        std_actor_loss = value_loss_t.std()
 
     else:
         denom = filled.sum()
         mean_value_loss = (value_loss_t * filled).sum() / denom
         mean_actor_loss = (actor_loss_t * filled).sum() / denom
 
-        var_value_loss = ((value_loss_t - mean_value_loss)**2 * filled).sum() / denom
-        std_value_loss = var_value_loss.sqrt()
-        var_actor_loss = ((actor_loss_t - mean_actor_loss)**2 * filled).sum() / denom
-        std_actor_loss = var_actor_loss.sqrt()
-
 
     mean_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    std_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean(),std_loss,std_actor_loss, std_value_loss, entropy.std())
+    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean())
 
 
 def _welford_standardise(state, reward):
@@ -225,10 +206,6 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         "mean_epoch_actor_loss": epoch_metrics[1],
         "mean_epoch_value_loss": epoch_metrics[2],
         "mean_epoch_entropy": epoch_metrics[3],
-        "std_epoch_loss": epoch_metrics[4],
-        "std_epoch_actor_loss": epoch_metrics[5],
-        "std_epoch_value_loss": epoch_metrics[6],
-        "std_epoch_entropy": epoch_metrics[7],
     }
     return params, target_critic, opt_state, diagnostics
 
@@ -393,29 +370,6 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "mean_block_mid": frac(blocked_t[t1:t2]),
             "mean_block_late": frac(blocked_t[t2:]),
 
-            "std_episode_return": std_ep_return,
-          
-            "std_step_count":states.step_count.std(),
-            "std_loss": diag["std_epoch_loss"][-1],
-            "std_actor_loss": diag["std_epoch_actor_loss"][-1],
-            "std_value_loss": diag["std_epoch_value_loss"][-1],
-            "std_entropy": diag["std_epoch_entropy"][-1],
-            "std_reward_std": rstd_t.std(),
-            #std_ behavioral signals
-            "std_success": success_per_ep.sum().std(),#maybe error
-            "std_success_rate": success_per_ep.mean(),
-            
-            "std_deliveries": std_team_per_ep(deliv_t),
-            "std_block": std_team_per_ep(blocked_t),
-            "std_block_rate": std_frac(blocked_t),
-            "std_idle_rate": std_frac(noop_t),
-            "std_pickup_rate": std_frac(pickup_t),
-            "std_deliveries_early": std_team_per_ep(deliv_t[:t1]),
-            "std_deliveries_mid": std_team_per_ep(deliv_t[t1:t2]),
-            "std_deliveries_late": std_team_per_ep(deliv_t[t2:]),
-            "std_block_early": std_frac(blocked_t[:t1]),
-            "std_block_mid": std_frac(blocked_t[t1:t2]),
-            "std_block_late": std_frac(blocked_t[t2:]),
         }
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
