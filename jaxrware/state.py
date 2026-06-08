@@ -13,6 +13,7 @@ class EnvState:
     agent_y: chex.Array  # int32 [N]
     agent_dir: chex.Array  # int32 [N]  (Direction value)
     agent_carrying: chex.Array  # int32 [N]  shelf id (1-based) or 0
+    agent_distance_traveled: chex.Array  # int32 [N]
     agent_has_delivered: chex.Array  # bool [N]
 
     # shelves (S = number of non-highway cells)

@@ -32,6 +32,8 @@ COLUMNS = [
     "block_early",
     "block_mid",
     "block_late",
+    "distance_traveled",
+    "step_time",
 ]
 
 

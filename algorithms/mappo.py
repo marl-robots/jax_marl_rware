@@ -290,7 +290,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             welford, rstd = _welford_standardise(welford, rewards)
             sig = (info["deliveries"], info["forward_blocked"],
-                   info["noop"], info["pickup"], info["drop"])  # each [E,N]
+                   info["noop"], info["pickup"], info["drop"],info["distance_traveled"],info["step_time"])  # each [E,N]
             return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards, *sig)
 
         init = (states, obs, h0(), welford, krun)
@@ -298,7 +298,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             rollout_step, init, None, length=T
         )
         (obs_t, act_t, rstd_t, rraw_t,
-         deliv_t, blocked_t, noop_t, pickup_t, drop_t) = traj  # [T,E,N,*]
+         deliv_t, blocked_t, noop_t, pickup_t, drop_t,distance_traveled_t,step_time_t) = traj  # [T,E,N,*]
 
         batch = {
             "obs_flat_T": obs_t.reshape(T, B, obs_dim),
@@ -340,6 +340,8 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "block_early": frac(blocked_t[:t1]),
             "block_mid": frac(blocked_t[t1:t2]),
             "block_late": frac(blocked_t[t2:]),
+            "distance_traveled":team_per_ep(distance_traveled_t),
+            "step_time":frac(step_time_t),
         }
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:

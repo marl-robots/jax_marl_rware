@@ -8,6 +8,7 @@ state is an EnvState of JAX arrays. Semantics follow rware/warehouse.py exactly
 from __future__ import annotations
 
 import functools
+import time
 
 import jax
 import jax.numpy as jnp
@@ -90,6 +91,7 @@ class Warehouse:
             in_queue=in_queue,
             step_count=jnp.array(0, jnp.int32),
             inactive_count=jnp.array(0, jnp.int32),
+            agent_distance_traveled=jnp.zeros((N,),jnp.int32),
             key=key,
         )
         return state, self._obs(state)
@@ -97,6 +99,7 @@ class Warehouse:
     # ---- step --------------------------------------------------------------
     @functools.partial(jax.jit, static_argnums=0)
     def step(self, state: EnvState, actions):
+        start_time=time.time()
         cfg = self.cfg
         N = cfg.n_agents
         actions = actions.astype(jnp.int32)
@@ -112,6 +115,7 @@ class Warehouse:
         rewards = jnp.zeros((N,), jnp.float32)
 
         # --- FORWARD (committed) ---
+        old_x, old_y = state.agent_x, state.agent_y
         new_x = jnp.where(moves, tx, state.agent_x)
         new_y = jnp.where(moves, ty, state.agent_y)
 
@@ -210,9 +214,11 @@ class Warehouse:
         if cfg.max_inactivity_steps is not None:
             done = done | (inactive >= cfg.max_inactivity_steps)
 
+        agent_new_travel=state.agent_distance_traveled + abs(new_x- old_x) + abs(new_y - old_y)
+
         state = state.replace(
             agent_has_delivered=has_delivered, in_queue=in_queue,
-            step_count=step_count, inactive_count=inactive, key=key,
+            step_count=step_count, inactive_count=inactive, agent_distance_traveled=agent_new_travel,key=key,
         )
         obs = self._obs(state)
         # ---- behavioral signals (commentary; no effect on dynamics) ----
@@ -220,12 +226,17 @@ class Warehouse:
         # was not a voluntary carry-into-shelf cancel -> a collision/contention proxy.
         forward_blocked = (actions == Action.FORWARD) & (~moves) & (~_cancelled)
         noop = actions == Action.NOOP
+        end_time=time.time()
+        step_time=end_time-start_time
+
         info = {
-            "delivered": delivered_any,        # scalar bool (kept for compatibility)
-            "deliveries": deliveries,          # [N] int32, per-agent deliveries this step
-            "forward_blocked": forward_blocked,  # [N] bool
-            "noop": noop,                      # [N] bool
-            "pickup": pickup,                  # [N] bool
-            "drop": drop,                      # [N] bool
+            "delivered": delivered_any,             # scalar bool (kept for compatibility)
+            "deliveries": deliveries,               # [N] int32, per-agent deliveries this step
+            "forward_blocked": forward_blocked,     # [N] bool
+            "noop": noop,                           # [N] bool
+            "pickup": pickup,                       # [N] bool
+            "drop": drop,                           # [N] bool
+            "distance_traveled":agent_new_travel,   # [N] int32
+            "step_time":step_time,                  # scalar float32
         }
         return state, obs, rewards, done, info
