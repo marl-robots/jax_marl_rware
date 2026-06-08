@@ -318,7 +318,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
 
         # team episode return (sum over agents, mean over envs) to match
         # marlbase's logged `mean_episode_returns`.
-        ep_return = rraw_t.sum(axis=0).sum(-1).mean()
+        ep_return = rraw_t.sum(axis=0).sum(axis=-1).mean()
 
         # ---- behavioral aggregates (all in-graph; only per-update scalars leave
         # the scan). team_per_ep sums over time + agents, means over envs; `frac`
@@ -327,6 +327,30 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         t1, t2 = T // 3, 2 * (T // 3)
         team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).mean()
         frac = lambda x: x.mean()
+        E_per_T_mean=lambda x: x.mean(axis=0)#shape[i,j]=>shape[j]={mean over j i times}
+        
+        #success = fraction of envs where all N deliveries happened at least once during the episode
+        # Deliveries: int [T, E, N] = Deliveries per step, per env and per agent
+        # 1) Summary of deliveries per risk throughout the episode -> [E, N]
+        total_per_agent = deliv_t.sum(axis=0)
+
+        #2) Did each agent succeed at least once -> bool [E, N]
+        success_per_agent = total_per_agent > 0
+
+        #3) Number of successful agents in each env -> [E]
+        num_successful_agents_per_env = success_per_agent.astype(jnp.int32).sum(axis=-1)  # [E]
+
+        #4) Rate of successful agents in each env -> [E] (0..1)
+        frac_successful_agents_per_env = num_successful_agents_per_env.astype(jnp.float32) / total_per_agent.shape[-1]
+
+        #5) Did all agents in env succeed (team success) -> [E] bool
+        team_success_per_env = jnp.all(success_per_agent, axis=-1)
+        #6) Summation Scalars
+        #mean on all envs
+        mean_num_successful = num_successful_agents_per_env.astype(jnp.float32).mean() 
+        #all agents success envs rate 
+        team_success_rate = team_success_per_env.astype(jnp.float32).mean()
+
         metrics = {
             "episode_return": ep_return,
             "loss": diag["epoch_loss"][-1],
@@ -335,22 +359,26 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "entropy": diag["epoch_entropy"][-1],
             "reward_std_mean": rstd_t.mean(),
             # behavioral signals
-            "deliveries": team_per_ep(deliv_t),
-            "block_rate": frac(blocked_t),
-            "idle_rate": frac(noop_t),
-            "pickup_rate": frac(pickup_t),
-            "deliveries_early": team_per_ep(deliv_t[:t1]),
-            "deliveries_mid": team_per_ep(deliv_t[t1:t2]),
-            "deliveries_late": team_per_ep(deliv_t[t2:]),
-            "block_early": frac(blocked_t[:t1]),
-            "block_mid": frac(blocked_t[t1:t2]),
-            "block_late": frac(blocked_t[t2:]),
-            "distance_traveled":team_per_ep(distance_traveled_t),
-            "step_time":frac(step_time_t),
-            "episode_time": delta_time,
-            "step_count":states.step_count,
-            "FPS":states.step_count/step_time_t,
+            "deliveries": team_per_ep(deliv_t),#[T,E,N]
+            "block_rate": frac(blocked_t),#[T,E,N]
+            "idle_rate": frac(noop_t),#[T,E,N]
+            "pickup_rate": frac(pickup_t),#[T,E,N]
+            "deliveries_early": team_per_ep(deliv_t[:t1]),#[0-(t1-1),E,N]
+            "deliveries_mid": team_per_ep(deliv_t[t1:t2]),#[t1-(t2-1),E,N]
+            "deliveries_late": team_per_ep(deliv_t[t2:]), #[t2-(T-1),E,N]
+            "block_early": frac(blocked_t[:t1]),#[0-(t1-1),E,N]
+            "block_mid": frac(blocked_t[t1:t2]),#[t1-(t2-1),E,N]
+            "block_late": frac(blocked_t[t2:]),#[t2-(T-1),E,N]
+            "distance_traveled":team_per_ep(distance_traveled_t),#[T,E,N]
+            "episode_time": delta_time,#scalar
+            "step_time":frac(E_per_T_mean(step_time_t).mean()),#[T,E]
+            "step_count":frac(states.step_count),#[E]
+            "FPS":frac(states.step_count/E_per_T_mean(step_time_t)),
+            # success = fraction of envs where all N deliveries happened at least once during the episode
+            "success": mean_num_successful,
+            "success_rate":team_success_rate,
         }
+
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(

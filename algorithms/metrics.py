@@ -37,6 +37,8 @@ COLUMNS = [
     "episode_time",
     "step_count",
     "FPS",
+    "success",
+    "success_rate",
 ]
 
 

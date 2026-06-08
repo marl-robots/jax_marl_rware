@@ -199,8 +199,10 @@ def main():
                 "distance_traveled": int(m["distance_traveled"][i]),
                 "step_time": float(m["step_time"][i]),
                 "episode_time":float(m["episode_time"][i]),
-                "step_count":float(m["step_count"][i]),
+                "step_count":int(m["step_count"][i]),
                 "FPS":float(m["FPS"][i]),
+                "success":float(m["success"][i]),
+                "success_rate":float(m["success_rate"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)

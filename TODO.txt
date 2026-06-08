@@ -44,12 +44,12 @@ DONE: mean_step_count, count how many times env.step called
 DONE: mean_step_time, step_time = end - start delta for one env.step
         
         
-NOT_DONE: mean_success,
+DONE: mean_success,
     in plot**.py:
     count how many times on each step num_deliveries >= required_deliveries
     will do:
     add to metrics line 329~ 
-NOT_DONE: mean_success_rate, mean_success%
+DONE: mean_success_rate, mean_success%
 
 DONE: add date/time to runs folder
 
@@ -57,4 +57,4 @@ NOT_DONE: add std/mean to all relvante vairables and stack in results.csv
 
 NOT_DONE: add total_updates to log line
 
-NOT_DONE: in plot add mean as line std as warrper and vise reverse
+DONE: in plot add mean as line std as warrper and vise reverse
