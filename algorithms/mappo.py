@@ -19,7 +19,6 @@ shared networks need no per-agent stacking.
 from __future__ import annotations
 
 import functools
-import time
 
 import jax
 import jax.numpy as jnp
@@ -54,17 +53,16 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
     actor_loss_t = -jnp.minimum(surr1, surr2).sum(-1) - entropy_coef * entropy.sum(-1)
 
     if filled is None:
-        mean_value_loss = value_loss_t.mean()
-        mean_actor_loss = actor_loss_t.mean()
-
+        value_loss = value_loss_t.mean()
+        actor_loss = actor_loss_t.mean()
     else:
         denom = filled.sum()
-        mean_value_loss = (value_loss_t * filled).sum() / denom
-        mean_actor_loss = (actor_loss_t * filled).sum() / denom
+        value_loss = (value_loss_t * filled).sum() / denom
+        actor_loss = (actor_loss_t * filled).sum() / denom
 
+    loss = actor_loss + value_loss_coef * value_loss
+    return loss, (actor_loss, value_loss, entropy.mean())
 
-    mean_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean())
 
 def a2c_losses(returns, values, logp, entropy, *,
                entropy_coef, value_loss_coef, filled=None):
@@ -86,17 +84,15 @@ def a2c_losses(returns, values, logp, entropy, *,
     actor_loss_t = -(logp * adv).sum(-1) - entropy_coef * entropy.sum(-1)
 
     if filled is None:
-        mean_value_loss = value_loss_t.mean()
-        mean_actor_loss = actor_loss_t.mean()
-
+        value_loss = value_loss_t.mean()
+        actor_loss = actor_loss_t.mean()
     else:
         denom = filled.sum()
-        mean_value_loss = (value_loss_t * filled).sum() / denom
-        mean_actor_loss = (actor_loss_t * filled).sum() / denom
+        value_loss = (value_loss_t * filled).sum() / denom
+        actor_loss = (actor_loss_t * filled).sum() / denom
 
-
-    mean_loss = mean_value_loss + value_loss_coef * mean_value_loss
-    return mean_loss,(mean_actor_loss, mean_value_loss, entropy.mean())
+    loss = actor_loss + value_loss_coef * value_loss
+    return loss, (actor_loss, value_loss, entropy.mean())
 
 
 def _welford_standardise(state, reward):
@@ -202,12 +198,13 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     diagnostics = {
         "returns": returns,
         "old_logp": old_logp,
-        "mean_epoch_loss": epoch_metrics[0],
-        "mean_epoch_actor_loss": epoch_metrics[1],
-        "mean_epoch_value_loss": epoch_metrics[2],
-        "mean_epoch_entropy": epoch_metrics[3],
+        "epoch_loss": epoch_metrics[0],
+        "epoch_actor_loss": epoch_metrics[1],
+        "epoch_value_loss": epoch_metrics[2],
+        "epoch_entropy": epoch_metrics[3],
     }
     return params, target_critic, opt_state, diagnostics
+
 
 def _host_log(upd, ret, ent, deliveries, block_rate, idle_rate):
     """Host-side live print, fired once per update via io_callback (cheap).
@@ -274,18 +271,13 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         welford = (jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.array(0.0))
         return (params, target_critic, opt_state, welford, key)
 
-    #def update_step(carry, data):
     def update_step(carry, upd_idx):
         params, target_critic, opt_state, welford, key = carry
-        #(total_upd ,upd_idx)=data
-        #total_upd=xs
         key, kreset, krun = jax.random.split(key, 3)
 
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
         # ---- rollout: one full episode, hidden starts at zeros ----
-        episode_start_time = time.time()
-
         def rollout_step(rc, _):
             states, obs, h_actor, welford, key = rc
             key, ksamp = jax.random.split(key)
@@ -305,9 +297,6 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         (states, *_unused, welford, _), traj = jax.lax.scan(
             rollout_step, init, None, length=T
         )
-        episode_end_time=time.time()
-        delta_time=(episode_end_time-episode_start_time)#//1000000
-
         (obs_t, act_t, rstd_t, rraw_t,
          deliv_t, blocked_t, noop_t, pickup_t, drop_t) = traj  # [T,E,N,*]
 
@@ -325,7 +314,6 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         # team episode return (sum over agents, mean over envs) to match
         # marlbase's logged `mean_episode_returns`.
         ep_return = rraw_t.sum(axis=0).sum(-1).mean()
-        std_ep_return = rraw_t.sum(axis=0).sum(-1).std()
 
         # ---- behavioral aggregates (all in-graph; only per-update scalars leave
         # the scan). team_per_ep sums over time + agents, means over envs; `frac`
@@ -334,49 +322,31 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         t1, t2 = T // 3, 2 * (T // 3)
         team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).mean()
         frac = lambda x: x.mean()
-
-        std_team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).std()
-        std_frac = lambda x: x.std()
-        
-        success_team_per_ep = lambda x: x.sum(axis=-1).sum(axis=-1)
-        team_deliv = success_team_per_ep(deliv_t)
-        team_pick  = success_team_per_ep(pickup_t)
-        success_per_ep = team_deliv > team_pick
-            # [T,E,N,*]
-
         metrics = {
-            "episode_time": delta_time,
-            "mean_episode_return": ep_return,
-           
-            "mean_step_count":states.step_count.mean(),
-            "mean_loss": diag["mean_epoch_loss"][-1],
-            "mean_actor_loss": diag["mean_epoch_actor_loss"][-1],
-            "mean_value_loss": diag["mean_epoch_value_loss"][-1],
-            "mean_entropy": diag["mean_epoch_entropy"][-1],
-            "mean_reward_std": rstd_t.mean(),
-            #behavioral signals
-            "mean_success": success_per_ep.sum().mean(),##maybe error
-            "mean_success_rate": success_per_ep.mean(),
-            
-            "mean_deliveries": team_per_ep(deliv_t),
-            "mean_block": team_per_ep(blocked_t),
-            "mean_block_rate": frac(blocked_t),
-            "mean_idle_rate": frac(noop_t),
-            "mean_pickup_rate": frac(pickup_t),
-            "mean_deliveries_early": team_per_ep(deliv_t[:t1]),
-            "mean_deliveries_mid": team_per_ep(deliv_t[t1:t2]),
-            "mean_deliveries_late": team_per_ep(deliv_t[t2:]),
-            "mean_block_early": frac(blocked_t[:t1]),
-            "mean_block_mid": frac(blocked_t[t1:t2]),
-            "mean_block_late": frac(blocked_t[t2:]),
-
+            "episode_return": ep_return,
+            "loss": diag["epoch_loss"][-1],
+            "actor_loss": diag["epoch_actor_loss"][-1],
+            "value_loss": diag["epoch_value_loss"][-1],
+            "entropy": diag["epoch_entropy"][-1],
+            "reward_std_mean": rstd_t.mean(),
+            # behavioral signals
+            "deliveries": team_per_ep(deliv_t),
+            "block_rate": frac(blocked_t),
+            "idle_rate": frac(noop_t),
+            "pickup_rate": frac(pickup_t),
+            "deliveries_early": team_per_ep(deliv_t[:t1]),
+            "deliveries_mid": team_per_ep(deliv_t[t1:t2]),
+            "deliveries_late": team_per_ep(deliv_t[t2:]),
+            "block_early": frac(blocked_t[:t1]),
+            "block_mid": frac(blocked_t[t1:t2]),
+            "block_late": frac(blocked_t[t2:]),
         }
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
-                _host_log, None,upd_idx, metrics["mean_episode_return"],
-                metrics["mean_entropy"], metrics["mean_deliveries"], metrics["mean_block_rate"],
-                metrics["mean_idle_rate"], ordered=False,
+                _host_log, None, upd_idx, metrics["episode_return"],
+                metrics["entropy"], metrics["deliveries"], metrics["block_rate"],
+                metrics["idle_rate"], ordered=False,
             )
         return carry, metrics
 

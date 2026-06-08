@@ -16,31 +16,23 @@ COLUMNS = [
     "environment_steps",
     "updates",
     "mean_episode_returns",
-    "mean_entropy",
-    "mean_loss",
-    "mean_actor_loss",
-    "mean_value_loss",
-    "mean_reward_std",
-    "episode_time",
-    #behavioral signals (commentary)
-    "mean_success",
-    "mean_success_rate",
-    "mean_step_count",
-    "mean_FPS",
-    "mean_deliveries",
-    "mean_block",
-    "mean_block_rate",
-    "mean_idle_rate",
-    "mean_pickup_rate",
-    "mean_deliveries_early",
-    "mean_deliveries_mid",
-    "mean_deliveries_late",
-    "mean_block_early",
-    "mean_block_mid",
-    "mean_block_late",
+    "entropy",
+    "loss",
+    "actor_loss",
+    "value_loss",
+    "reward_std_mean",
+    # behavioral signals (commentary)
+    "deliveries",
+    "block_rate",
+    "idle_rate",
+    "pickup_rate",
+    "deliveries_early",
+    "deliveries_mid",
+    "deliveries_late",
+    "block_early",
+    "block_mid",
+    "block_late",
 ]
-      
-
 
 
 class CSVLogger:

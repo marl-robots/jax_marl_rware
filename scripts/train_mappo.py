@@ -18,7 +18,6 @@ Examples (WSL, conda env jax_env_1):
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
 import os
 import time
 
@@ -76,7 +75,7 @@ def main():
     ap.add_argument("--no-commentary", action="store_true",
                     help="disable the per-chunk behavioral commentary (Layer 2)")
     args = ap.parse_args()
-    
+
     overrides = {}
     if args.parallel_envs is not None:
         overrides["parallel_envs"] = args.parallel_envs
@@ -88,7 +87,6 @@ def main():
         overrides["num_epochs"] = args.num_epochs
     if args.no_rnn:
         overrides["use_rnn"] = False
-    
 
     cfg = MAPPOConfig.from_algo(
         args.algo,
@@ -100,16 +98,9 @@ def main():
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
-    now = datetime.now()
-    date_time = now.strftime("%Y_%m_%d_%H_%M_%S")
-    
     net_tag = "" if cfg.use_rnn else "_fc"
-    if args.resume:
-        run_dir = args.run_dir or os.path.join(
-        "runs","resume",f"{date_time}" ,f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag")
-    else:
-        run_dir = args.run_dir or os.path.join(
-        "runs",f"{date_time}" , f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag")
+    run_dir = args.run_dir or os.path.join(
+        "runs", f"{cfg.algo}{net_tag}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
     chunk = max(1, args.checkpoint_every)
@@ -123,6 +114,7 @@ def main():
     if n_updates % chunk != 0:
         print(f"  note: {n_updates} not divisible by chunk {chunk}; the final "
               f"short chunk triggers one extra XLA compile.")
+
     mgr = CheckpointManager(run_dir, max_to_keep=args.max_to_keep)
     mgr.save_config(cfg)
     trainer = make_resumable_train(cfg, live_log=not args.no_live_log)
@@ -168,47 +160,35 @@ def main():
     upd = start
     while upd < n_updates:
         k = min(chunk, n_updates - upd)
-        #carry, metrics = trainer["train_from"](carry,n_updates,upd, k)
-        carry, metrics = trainer["train_from"](carry,upd, k)
+        carry, metrics = trainer["train_from"](carry, upd, k)
         carry = jax.block_until_ready(carry)
 
         # all per-update metrics for this chunk, as np arrays of shape [k]
         m = {key: np.asarray(val) for key, val in metrics.items()}
         for i in range(k):
             done_count = upd + i + 1
-            ret_i = float(m["mean_episode_return"][i])
+            ret_i = float(m["episode_return"][i])
             ema = ret_i if ema is None else (
                 args.ema_decay * ema + (1.0 - args.ema_decay) * ret_i)
-  
             logger.log({
                 "environment_steps": done_count * batch_steps,
                 "updates": done_count,
-                "episode_time": float(m["episode_time"][i]),
-
-                "mean_episode_returns": float(m["mean_episode_return"][i]),
-                
-                "mean_step_count":int(m["mean_step_count"][i]),
-                "mean_FPS": 0,
-                "mean_success": float(m["mean_success"][i]),
-                "mean_success_rate": float(m["mean_success_rate"][i]),
-             
-                "mean_entropy": float(m["mean_entropy"][i]),
-                "mean_loss": float(m["mean_loss"][i]),
-                "mean_actor_loss": float(m["mean_actor_loss"][i]),
-                "mean_value_loss": float(m["mean_value_loss"][i]),
-                "mean_reward_std": float(m["mean_reward_std"][i]),
-                "mean_deliveries": float(m["mean_deliveries"][i]),
-                "mean_block": float(m["mean_block"][i]),
-                "mean_block_rate": float(m["mean_block_rate"][i]),
-                "mean_idle_rate": float(m["mean_idle_rate"][i]),
-                "mean_pickup_rate": float(m["mean_pickup_rate"][i]),
-                "mean_deliveries_early": float(m["mean_deliveries_early"][i]),
-                "mean_deliveries_mid": float(m["mean_deliveries_mid"][i]),
-                "mean_deliveries_late": float(m["mean_deliveries_late"][i]),
-                "mean_block_early": float(m["mean_block_early"][i]),
-                "mean_block_mid": float(m["mean_block_mid"][i]),
-                "mean_block_late": float(m["mean_block_late"][i]),
-
+                "mean_episode_returns": ret_i,
+                "entropy": float(m["entropy"][i]),
+                "loss": float(m["loss"][i]),
+                "actor_loss": float(m["actor_loss"][i]),
+                "value_loss": float(m["value_loss"][i]),
+                "reward_std_mean": float(m["reward_std_mean"][i]),
+                "deliveries": float(m["deliveries"][i]),
+                "block_rate": float(m["block_rate"][i]),
+                "idle_rate": float(m["idle_rate"][i]),
+                "pickup_rate": float(m["pickup_rate"][i]),
+                "deliveries_early": float(m["deliveries_early"][i]),
+                "deliveries_mid": float(m["deliveries_mid"][i]),
+                "deliveries_late": float(m["deliveries_late"][i]),
+                "block_early": float(m["block_early"][i]),
+                "block_mid": float(m["block_mid"][i]),
+                "block_late": float(m["block_late"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
@@ -216,9 +196,9 @@ def main():
         # Layer 2: one behavioral commentary block per chunk (host-side, between
         # chunks -> no effect on the fused-scan rollout speed).
         if narrator is not None:
-            stats = {key: m[key].mean() for key in (
-                "mean_episode_return", "mean_deliveries", "mean_block_rate", "mean_idle_rate",
-                "mean_deliveries_early", "mean_deliveries_mid", "mean_deliveries_late")}
+            stats = {key: float(m[key].mean()) for key in (
+                "episode_return", "deliveries", "block_rate", "idle_rate",
+                "deliveries_early", "deliveries_mid", "deliveries_late")}
             print(narrator.chunk(upd, stats), flush=True)
 
     mgr.wait()
