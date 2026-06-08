@@ -58,3 +58,9 @@ DONE: add std/mean to all relvante vairables and stack in results.csv
 DONE: add total_updates to log line
 
 DONE: in plot add mean as line std as warrper and vise reverse
+
+
+DDDDDDDDDDDDDDDDDDDDDOOOOOOOOOOOOOOOOOOOOOOOOONNNNNNNNNNNNNNNNNNNNNNNEEEEEEEEEEEEEEEEEEEEEE
+
+step_time, step_time = end - start delta for one env.step
+distance_traveled

@@ -18,6 +18,7 @@ Examples (WSL, conda env jax_env_1):
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import os
 import time
 
@@ -98,9 +99,16 @@ def main():
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
+    now = datetime.now()
+    date_time = now.strftime("%Y_%m_%d_%H_%M_%S")
+    
     net_tag = "" if cfg.use_rnn else "_fc"
-    run_dir = args.run_dir or os.path.join(
-        "runs", f"{cfg.algo}{net_tag}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
+    if args.resume:
+        run_dir = args.run_dir or os.path.join(
+        "runs","resume",f"{date_time}" ,f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag")
+    else:
+        run_dir = args.run_dir or os.path.join(
+        "runs",f"{date_time}" , f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag")
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
     chunk = max(1, args.checkpoint_every)
@@ -114,7 +122,6 @@ def main():
     if n_updates % chunk != 0:
         print(f"  note: {n_updates} not divisible by chunk {chunk}; the final "
               f"short chunk triggers one extra XLA compile.")
-
     mgr = CheckpointManager(run_dir, max_to_keep=args.max_to_keep)
     mgr.save_config(cfg)
     trainer = make_resumable_train(cfg, live_log=not args.no_live_log)
