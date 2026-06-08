@@ -19,6 +19,7 @@ shared networks need no per-agent stacking.
 from __future__ import annotations
 
 import functools
+import time
 
 import jax
 import jax.numpy as jnp
@@ -278,6 +279,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
         # ---- rollout: one full episode, hidden starts at zeros ----
+        episode_start_time = time.time()
         def rollout_step(rc, _):
             states, obs, h_actor, welford, key = rc
             key, ksamp = jax.random.split(key)
@@ -297,6 +299,9 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         (states, *_unused, welford, _), traj = jax.lax.scan(
             rollout_step, init, None, length=T
         )
+        episode_end_time=time.time()
+        delta_time=(episode_end_time-episode_start_time)#//1000000
+
         (obs_t, act_t, rstd_t, rraw_t,
          deliv_t, blocked_t, noop_t, pickup_t, drop_t,distance_traveled_t,step_time_t) = traj  # [T,E,N,*]
 
@@ -342,6 +347,9 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "block_late": frac(blocked_t[t2:]),
             "distance_traveled":team_per_ep(distance_traveled_t),
             "step_time":frac(step_time_t),
+            "episode_time": delta_time,
+            "step_count":states.step_count,
+            "FPS":states.step_count/step_time_t,
         }
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:

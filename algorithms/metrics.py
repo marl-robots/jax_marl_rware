@@ -34,6 +34,9 @@ COLUMNS = [
     "block_late",
     "distance_traveled",
     "step_time",
+    "episode_time",
+    "step_count",
+    "FPS",
 ]
 
 

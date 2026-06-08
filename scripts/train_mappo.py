@@ -196,8 +196,11 @@ def main():
                 "block_early": float(m["block_early"][i]),
                 "block_mid": float(m["block_mid"][i]),
                 "block_late": float(m["block_late"][i]),
-                "distance_traveled": float(m["distance_traveled"][i]),
+                "distance_traveled": int(m["distance_traveled"][i]),
                 "step_time": float(m["step_time"][i]),
+                "episode_time":float(m["episode_time"][i]),
+                "step_count":float(m["step_count"][i]),
+                "FPS":float(m["FPS"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
