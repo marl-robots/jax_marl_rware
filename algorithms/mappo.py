@@ -232,14 +232,13 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     }
     return params, target_critic, opt_state, diagnostics
 
-
-def _host_log(total_upd,upd, ret, ent, deliveries, block_rate, idle_rate):
+def _host_log(upd, ret, ent, deliveries, block_rate, idle_rate):
     """Host-side live print, fired once per update via io_callback (cheap).
 
     Shows the behavioral view used for watching progress: team return,
     deliveries/episode, forward-block (contention) %, idle %, and entropy
     (watch entropy — a fast drop toward 0 means exploration collapse)."""
-    print(f"  upd {int(upd):4d}/{int(total_upd):4d} | return {float(ret):8.3f} | "
+    print(f"  upd {int(upd):4d} | return {float(ret):8.3f} | "
           f"deliv {float(deliveries):6.2f} | blocked {float(block_rate) * 100:4.1f}% | "
           f"idle {float(idle_rate) * 100:4.1f}% | ent {float(ent):5.3f}", flush=True)
 
@@ -317,12 +316,12 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             h_actor, dist = actor.apply(
                 params["actor"], h_actor, (obs_flat[None], zeros_BT(1))
             )
-            actions_flat = jax.random.categorical(ksamp, dist.logits[0]) # [B]
+            actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B]
             actions = actions_flat.reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             welford, rstd = _welford_standardise(welford, rewards)
             sig = (info["deliveries"], info["forward_blocked"],
-                   info["noop"], info["pickup"], info["drop"],info["distance_traveled"],info["step_time"])  # each [E,N]
+                   info["noop"], info["pickup"], info["drop"])  # each [E,N]
             return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards, *sig)
 
         init = (states, obs, h0(), welford, krun)
@@ -333,7 +332,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         delta_time=(episode_end_time-episode_start_time)#//1000000
 
         (obs_t, act_t, rstd_t, rraw_t,
-         deliv_t, blocked_t, noop_t, pickup_t, drop_t,distance_t,step_time) = traj  # [T,E,N,*]
+         deliv_t, blocked_t, noop_t, pickup_t, drop_t) = traj  # [T,E,N,*]
 
         batch = {
             "obs_flat_T": obs_t.reshape(T, B, obs_dim),
@@ -371,7 +370,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         metrics = {
             "episode_time": delta_time,
             "mean_episode_return": ep_return,
-            "mean_step_time":step_time.mean(),
+           
             "mean_step_count":states.step_count.mean(),
             "mean_loss": diag["mean_epoch_loss"][-1],
             "mean_actor_loss": diag["mean_epoch_actor_loss"][-1],
@@ -381,7 +380,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             #behavioral signals
             "mean_success": success_per_ep.sum().mean(),##maybe error
             "mean_success_rate": success_per_ep.mean(),
-            "mean_distance_traveled":team_per_ep(distance_t),
+            
             "mean_deliveries": team_per_ep(deliv_t),
             "mean_block": team_per_ep(blocked_t),
             "mean_block_rate": frac(blocked_t),
@@ -395,7 +394,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "mean_block_late": frac(blocked_t[t2:]),
 
             "std_episode_return": std_ep_return,
-            "std_step_time":step_time.std(),
+          
             "std_step_count":states.step_count.std(),
             "std_loss": diag["std_epoch_loss"][-1],
             "std_actor_loss": diag["std_epoch_actor_loss"][-1],
@@ -405,7 +404,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             #std_ behavioral signals
             "std_success": success_per_ep.sum().std(),#maybe error
             "std_success_rate": success_per_ep.mean(),
-            "std_distance_traveled":std_team_per_ep(distance_t),
+            
             "std_deliveries": std_team_per_ep(deliv_t),
             "std_block": std_team_per_ep(blocked_t),
             "std_block_rate": std_frac(blocked_t),
@@ -421,7 +420,6 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
-                #_host_log, None,total_upd ,upd_idx, metrics["mean_episode_return"],
                 _host_log, None,upd_idx, metrics["mean_episode_return"],
                 metrics["mean_entropy"], metrics["mean_deliveries"], metrics["mean_block_rate"],
                 metrics["mean_idle_rate"], ordered=False,
@@ -465,17 +463,10 @@ def make_resumable_train(cfg: MAPPOConfig, live_log: bool = False):
     """
     env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
 
-    @functools.partial(jax.jit, static_argnums=(3,))
-    def train_from(carry, base_upd, n): 
-        #TODO:check this
+    @functools.partial(jax.jit, static_argnums=(2,))
+    def train_from(carry, base_upd, n):
         idxs = base_upd + jnp.arange(n)
-        #total_updates = jnp.full((n,), n_update)
-        #total_updates = jnp.full((n,), -1)
-
-
-        #xs=(total_updates,idxs)
-        xs=(idxs)
-        carry, metrics = jax.lax.scan(update_step, carry, xs, length=n)
+        carry, metrics = jax.lax.scan(update_step, carry, idxs, length=n)
         return carry, metrics
 
     return {

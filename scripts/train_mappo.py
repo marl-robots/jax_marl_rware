@@ -186,12 +186,12 @@ def main():
                 "episode_time": float(m["episode_time"][i]),
 
                 "mean_episode_returns": float(m["mean_episode_return"][i]),
-                "mean_step_time":float(m["mean_step_time"][i]),
+                
                 "mean_step_count":int(m["mean_step_count"][i]),
                 "mean_FPS": float((m["mean_step_count"][i])/(m["mean_step_time"][i])),
                 "mean_success": float(m["mean_success"][i]),
                 "mean_success_rate": float(m["mean_success_rate"][i]),
-                "mean_distance_traveled": int(m["mean_distance_traveled"][i]),
+             
                 "mean_entropy": float(m["mean_entropy"][i]),
                 "mean_loss": float(m["mean_loss"][i]),
                 "mean_actor_loss": float(m["mean_actor_loss"][i]),
@@ -210,12 +210,12 @@ def main():
                 "mean_block_late": float(m["mean_block_late"][i]),
 
                 "std_episode_returns": float(m["std_episode_return"][i]),
-                "std_step_time":float(m["std_step_time"][i]),
+                
                 "std_step_count":int(m["std_step_count"][i]),
                 "std_FPS": float((m["std_step_count"][i])/(m["std_step_time"][i])),
                 "std_success": float(m["std_success"][i]),
                 "std_success_rate": float(m["std_success_rate"][i]),
-                "std_distance_traveled": int(m["std_distance_traveled"][i]),
+                
                 "std_entropy": float(m["std_entropy"][i]),
                 "std_loss": float(m["std_loss"][i]),
                 "std_actor_loss": float(m["std_actor_loss"][i]),

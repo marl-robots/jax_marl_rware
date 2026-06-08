@@ -27,5 +27,4 @@ class EnvState:
 
     step_count: chex.Array  # int32 scalar
     inactive_count: chex.Array  # int32 scalar
-    distance_traveled: chex.Array  # int32 scalar
     key: chex.PRNGKey

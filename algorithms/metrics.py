@@ -25,10 +25,8 @@ COLUMNS = [
     #behavioral signals (commentary)
     "mean_success",
     "mean_success_rate",
-    "mean_step_time",
     "mean_step_count",
     "mean_FPS",
-    "mean_distance_traveled",
     "mean_deliveries",
     "mean_block",
     "mean_block_rate",
@@ -50,10 +48,8 @@ COLUMNS = [
     #std_ behavioral signals (commentary)
     "std_success",
     "std_success_rate",
-    "std_step_time",
     "std_step_count",
     "std_FPS",
-    "std_distance_traveled",
     "std_deliveries",
     "std_block",
     "std_block_rate",
