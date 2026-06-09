@@ -49,7 +49,7 @@ DONE: mean_success,
     count how many times on each step num_deliveries >= required_deliveries
     will do:
     add to metrics line 329~ 
-DONE: mean_success_rate, mean_success%
+DONE: add mean_success_rate, mean_success% ERROR:most of times 0 
 
 DONE: add date/time to runs folder
 

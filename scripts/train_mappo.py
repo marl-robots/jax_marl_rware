@@ -167,7 +167,7 @@ def main():
     upd = start
     while upd < n_updates:
         k = min(chunk, n_updates - upd)
-        carry, metrics = trainer["train_from"](carry, upd, k)
+        carry, metrics = trainer["train_from"](carry, upd, k,n_updates)
         carry = jax.block_until_ready(carry)
 
         # all per-update metrics for this chunk, as np arrays of shape [k]

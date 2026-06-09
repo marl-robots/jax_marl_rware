@@ -207,13 +207,13 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     return params, target_critic, opt_state, diagnostics
 
 
-def _host_log(upd, ret, ent, deliveries, block_rate, idle_rate):
+def _host_log(upd,n_updates, ret, ent, deliveries, block_rate, idle_rate):
     """Host-side live print, fired once per update via io_callback (cheap).
 
     Shows the behavioral view used for watching progress: team return,
     deliveries/episode, forward-block (contention) %, idle %, and entropy
     (watch entropy — a fast drop toward 0 means exploration collapse)."""
-    print(f"  upd {int(upd):4d} | return {float(ret):8.3f} | "
+    print(f"  upd {int(upd):4d}/{int(n_updates):4d} | return {float(ret):8.3f} | "
           f"deliv {float(deliveries):6.2f} | blocked {float(block_rate) * 100:4.1f}% | "
           f"idle {float(idle_rate) * 100:4.1f}% | ent {float(ent):5.3f}", flush=True)
 
@@ -272,10 +272,10 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         welford = (jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.array(0.0))
         return (params, target_critic, opt_state, welford, key)
 
-    def update_step(carry, upd_idx):
+    def update_step(carry, data):
         params, target_critic, opt_state, welford, key = carry
         key, kreset, krun = jax.random.split(key, 3)
-
+        upd_idx,n_updates=data
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
         # ---- rollout: one full episode, hidden starts at zeros ----
@@ -382,7 +382,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
-                _host_log, None, upd_idx, metrics["episode_return"],
+                _host_log, None, upd_idx,n_updates, metrics["episode_return"],
                 metrics["entropy"], metrics["deliveries"], metrics["block_rate"],
                 metrics["idle_rate"], ordered=False,
             )
@@ -425,10 +425,12 @@ def make_resumable_train(cfg: MAPPOConfig, live_log: bool = False):
     """
     env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
 
-    @functools.partial(jax.jit, static_argnums=(2,))
-    def train_from(carry, base_upd, n):
+    @functools.partial(jax.jit, static_argnums=(3,))
+    def train_from(carry, base_upd, n,n_updates):
         idxs = base_upd + jnp.arange(n)
-        carry, metrics = jax.lax.scan(update_step, carry, idxs, length=n)
+        total_updates = jnp.full((n,), n_updates)
+        xs=(total_updates,idxs)
+        carry, metrics = jax.lax.scan(update_step, carry, xs, length=n)
         return carry, metrics
 
     return {
