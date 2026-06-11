@@ -64,6 +64,7 @@ class MAPPOConfig:
     # --- run ---
     total_steps: int = 20_000_000
     seed: int = 2
+    algo_name: str="mappo"
 
     @property
     def algo(self) -> str:
@@ -83,7 +84,7 @@ class MAPPOConfig:
             raise ValueError(
                 f"unknown algo {algo!r}; choose from {sorted(_ALGO_FLAGS)}")
         centralised, use_ppo = _ALGO_FLAGS[key]
-        return cls(centralised_critic=centralised, use_ppo=use_ppo, **kwargs)
+        return cls(centralised_critic=centralised, use_ppo=use_ppo,algo_name=key, **kwargs)
 
     @property
     def batch_steps(self) -> int:

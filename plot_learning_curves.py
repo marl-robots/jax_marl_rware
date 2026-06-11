@@ -82,13 +82,11 @@ METRICS_LIST = [
 ]
 
 IGNORE_KEYS_LIST = [
-    "algorithm._target_",
-    "algorithm.name",
-    "logger._target_",
-    "+algorithm",
-    "algorithm.model._target_",
-    "env._target_",
-    "env.name",
+    "algo_name",
+    "size",
+    "n_agents",
+    "difficulty",
+    "use_ppo",
 ]
 
 # ============================================================
@@ -169,20 +167,24 @@ def build_labels(csv_paths):
     
     for cfg in configs:
         parts = []
-        algo = cfg.get("algorithm_name", "algo?")
+        algo = cfg.get("algo_name", "algo?")
         size = cfg.get("size", "env?")
         n_agents = cfg.get("n_agents", "env?")
         difficulty = cfg.get("difficulty", "env?")
-        
+
         parts.append(f"{algo}@rware-{size}-{n_agents}ag-{difficulty}")
         for key in differing:
             if key in cfg:
-                if "env.layout_path" in key:
+                if "layout_path" in key:#TODO :for now not exist
                     layout_name = Path(cfg[key]).stem
-                    layout_name = layout_name.split('.')[0]
-                    parts.append(f"{key.split('.')[-1]}={layout_name}")
+                    parts.append(f"{layout_name}")
                 else:
-                    parts.append(f"{key.split('.')[-1]}={cfg[key]}")
+                    if "lr" in key:
+                        s = f"{cfg[key]:.0e}"
+                        s = s.replace("e-0", "e-")#.replace("e+0", "e+")
+                        parts.append(f"{key}={s}")
+                    else:    
+                        parts.append(f"{key}={cfg[key]}")
                 
 
         labels.append(" | ".join(parts))
@@ -211,10 +213,10 @@ def plot_learning_curves(
         
 
         x = df[metric_x]
-        y = smooth(df[metric_y], window)
+        #y = smooth(df[metric_y], window)
         
         if "mean" in metric_y:
-            cv = df[metric_y].replace("mean", "std") / (df[metric_y] + 1e-8)/20
+            cv = df[metric_y].replace("mean", "std") / (df[metric_y] + 1e-8)
             mean_s =smooth(df[metric_y], window)
             std_s =smooth(cv, window)
 
@@ -227,8 +229,7 @@ def plot_learning_curves(
 
         plt.plot(
             x,
-            y,
-            #mean_s,
+            mean_s,
             linewidth=2,
             label=label,
             marker=marker,
@@ -236,7 +237,7 @@ def plot_learning_curves(
             markersize=6,
         )
         
-        #plt.fill_between(x, mean_s-std_s, mean_s+std_s, alpha=0.2)
+        plt.fill_between(x, mean_s-std_s, mean_s+std_s, alpha=0.2)
 
     plt.xlabel(metric_x)
     plt.ylabel(metric_y)
