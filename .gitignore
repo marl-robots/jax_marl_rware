@@ -13,6 +13,7 @@ dist/
 metrics_Must-have.md
 # training outputs (checkpoints, results.csv, config.json)
 runs/
+arena/
 
 # editor settings
 .vscode/
