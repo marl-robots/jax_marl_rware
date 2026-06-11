@@ -56,13 +56,26 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
     if filled is None:
         value_loss = value_loss_t.mean()
         actor_loss = actor_loss_t.mean()
+        value_loss_std = value_loss_t.std()
+        actor_loss_std = actor_loss_t.std()
     else:
         denom = filled.sum()
         value_loss = (value_loss_t * filled).sum() / denom
         actor_loss = (actor_loss_t * filled).sum() / denom
+        
+        eps = 1e-12
+        mean = (value_loss_t * filled).sum() / (filled.sum() + eps)
+        var = ((filled * (value_loss_t - mean)**2).sum()) / (filled.sum() + eps)
+        value_loss_std = jnp.sqrt(var)
+        mean = (actor_loss * filled).sum() / (filled.sum() + eps)
+        var = ((filled * (actor_loss - mean)**2).sum()) / (filled.sum() + eps)
+        actor_loss_std = jnp.sqrt(var)
+
 
     loss = actor_loss + value_loss_coef * value_loss
-    return loss, (actor_loss, value_loss, entropy.mean())
+    loss_std = actor_loss_std + value_loss_coef * value_loss_std
+    return loss, (actor_loss, value_loss, entropy.mean(),loss_std,actor_loss_std, value_loss_std, entropy.std()),
+
 
 
 def a2c_losses(returns, values, logp, entropy, *,
@@ -87,13 +100,26 @@ def a2c_losses(returns, values, logp, entropy, *,
     if filled is None:
         value_loss = value_loss_t.mean()
         actor_loss = actor_loss_t.mean()
+        value_loss_std = value_loss_t.std()
+        actor_loss_std = actor_loss_t.std()
     else:
         denom = filled.sum()
         value_loss = (value_loss_t * filled).sum() / denom
         actor_loss = (actor_loss_t * filled).sum() / denom
+        
+        eps = 1e-12
+        mean = (value_loss_t * filled).sum() / (filled.sum() + eps)
+        var = ((filled * (value_loss_t - mean)**2).sum()) / (filled.sum() + eps)
+        value_loss_std = jnp.sqrt(var)
+        mean = (actor_loss * filled).sum() / (filled.sum() + eps)
+        var = ((filled * (actor_loss - mean)**2).sum()) / (filled.sum() + eps)
+        actor_loss_std = jnp.sqrt(var)
+
 
     loss = actor_loss + value_loss_coef * value_loss
-    return loss, (actor_loss, value_loss, entropy.mean())
+    loss_std = actor_loss_std + value_loss_coef * value_loss_std
+
+    return loss, (actor_loss, value_loss, entropy.mean(),loss_std,actor_loss_std, value_loss_std, entropy.std()),
 
 
 def _welford_standardise(state, reward):
@@ -179,10 +205,10 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
 
     def epoch(carry, _):
         params, opt_state = carry
-        (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
-        updates, opt_state = tx.update(grads, opt_state)
+        (loss, aux_mean_std), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
+        updates, opt_state = tx.update(grads, opt_state)#TODO: check if grads not change
         params = optax.apply_updates(params, updates)
-        return (params, opt_state), (loss, *aux)
+        return (params, opt_state), (loss, *aux_mean_std)
 
     # PPO: num_epochs passes over the batch; A2C: a single grad step.
     n_epochs = cfg.num_epochs if cfg.use_ppo else 1
@@ -203,11 +229,15 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         "epoch_actor_loss": epoch_metrics[1],
         "epoch_value_loss": epoch_metrics[2],
         "epoch_entropy": epoch_metrics[3],
+        "epoch_loss_std": epoch_metrics[4],
+        "epoch_actor_loss_std": epoch_metrics[5],
+        "epoch_value_loss_std": epoch_metrics[6],
+        "epoch_entropy_std": epoch_metrics[7],
     }
     return params, target_critic, opt_state, diagnostics
 
 
-def _host_log(upd,n_updates, ret, ent, deliveries, block_rate, idle_rate):
+def _host_log(n_updates,upd, ret, ent, deliveries, block_rate, idle_rate):
     """Host-side live print, fired once per update via io_callback (cheap).
 
     Shows the behavioral view used for watching progress: team return,
@@ -287,7 +317,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             h_actor, dist = actor.apply(
                 params["actor"], h_actor, (obs_flat[None], zeros_BT(1))
             )
-            actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B]
+            actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B] # pyright: ignore[reportAttributeAccessIssue] 
             actions = actions_flat.reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             welford, rstd = _welford_standardise(welford, rewards)
@@ -316,73 +346,83 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             actor, critic, tx, cfg, params, target_critic, opt_state, batch
         )
 
-        # team episode return (sum over agents, mean over envs) to match
+        #  to match
         # marlbase's logged `mean_episode_returns`.
-        ep_return = rraw_t.sum(axis=0).sum(axis=-1).mean()
-
+        
+        # Episode is split into thirds to show how behavior shifts within the 500-step episode.
+        #[0-(t1-1),E,N,]
+        #[t1-(t2-1),E,N,]
+        #[t2-(T-1),E,N,]
+        t1, t2 = T // 3, 2 * (T // 3)
         # ---- behavioral aggregates (all in-graph; only per-update scalars leave
         # the scan). team_per_ep sums over time + agents, means over envs; `frac`
-        # is the fraction of agent-steps. Episode is split into thirds to show how
-        # behavior shifts within the 500-step episode.
-        t1, t2 = T // 3, 2 * (T // 3)
-        team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).mean()
-        frac = lambda x: x.mean()
-        E_per_T_mean=lambda x: x.mean(axis=0)#shape[i,j]=>shape[j]={mean over j i times}
-        
-        #success = fraction of envs where all N deliveries happened at least once during the episode
-        # Deliveries: int [T, E, N] = Deliveries per step, per env and per agent
-        # 1) Summary of deliveries per risk throughout the episode -> [E, N]
-        total_per_agent = deliv_t.sum(axis=0)
+        # is the fraction (rate) of agent-steps. 
+        #for x.shape and deliv_t.shape [T,E,...,N] only
+        team_per_ep = lambda str,x: x.sum(axis=0).sum(axis=-1).mean() if str=="mean" else x.sum(axis=0).sum(axis=-1).std()
+        num_successful = lambda str,deliv_t: (deliv_t.sum(axis=0) > 0).sum(axis=-1).mean() if str=="mean" else (deliv_t.sum(axis=0) > 0).sum(axis=-1).std()
+        team_success_rate = lambda str,deliv_t:jnp.all((deliv_t.sum(axis=0) > 0), axis=-1).mean() if str=="mean" else jnp.all((deliv_t.sum(axis=0) > 0), axis=-1).std()
+        #for x.shape [T,...] only
+        frac = lambda str,x: x.mean()if str=="mean" else x.std()
+        #for x.shape [T,E,...] only  
+        E_per_T = lambda str,x: x.mean(axis=0).mean() if str=="mean" else x.std(axis=0).std()
+       
 
-        #2) Did each agent succeed at least once -> bool [E, N]
-        success_per_agent = total_per_agent > 0
-
-        #3) Number of successful agents in each env -> [E]
-        num_successful_agents_per_env = success_per_agent.astype(jnp.int32).sum(axis=-1)  # [E]
-
-        #4) Rate of successful agents in each env -> [E] (0..1)
-        frac_successful_agents_per_env = num_successful_agents_per_env.astype(jnp.float32) / total_per_agent.shape[-1]
-
-        #5) Did all agents in env succeed (team success) -> [E] bool
-        team_success_per_env = jnp.all(success_per_agent, axis=-1)
-        #6) Summation Scalars
-        #mean on all envs
-        mean_num_successful = num_successful_agents_per_env.astype(jnp.float32).mean() 
-        #all agents success envs rate 
-        team_success_rate = team_success_per_env.astype(jnp.float32).mean()
-
-        metrics = {
-            "episode_return": ep_return,
-            "loss": diag["epoch_loss"][-1],
-            "actor_loss": diag["epoch_actor_loss"][-1],
-            "value_loss": diag["epoch_value_loss"][-1],
-            "entropy": diag["epoch_entropy"][-1],
-            "reward_std_mean": rstd_t.mean(),
-            # behavioral signals
-            "deliveries": team_per_ep(deliv_t),#[T,E,N]
-            "block_rate": frac(blocked_t),#[T,E,N]
-            "idle_rate": frac(noop_t),#[T,E,N]
-            "pickup_rate": frac(pickup_t),#[T,E,N]
-            "deliveries_early": team_per_ep(deliv_t[:t1]),#[0-(t1-1),E,N]
-            "deliveries_mid": team_per_ep(deliv_t[t1:t2]),#[t1-(t2-1),E,N]
-            "deliveries_late": team_per_ep(deliv_t[t2:]), #[t2-(T-1),E,N]
-            "block_early": frac(blocked_t[:t1]),#[0-(t1-1),E,N]
-            "block_mid": frac(blocked_t[t1:t2]),#[t1-(t2-1),E,N]
-            "block_late": frac(blocked_t[t2:]),#[t2-(T-1),E,N]
-            "distance_traveled":team_per_ep(distance_traveled_t),#[T,E,N]
-            "episode_time": delta_time,#scalar
-            "step_time":frac(E_per_T_mean(step_time_t).mean()),#[T,E]
-            "step_count":frac(states.step_count),#[E]
-            "FPS":frac(states.step_count/E_per_T_mean(step_time_t)),
-            # success = fraction of envs where all N deliveries happened at least once during the episode
-            "success": mean_num_successful,
-            "success_rate":team_success_rate,
+        metrics_std = {
+            "episode_return_std": team_per_ep("std",rraw_t),
+            "entropy_std": diag["epoch_entropy_std"].std(),#[ppo num_epoch,] if a2c [1,]
+            "loss_std": diag["epoch_loss_std"].std(),
+            "actor_loss_std": diag["epoch_actor_loss_std"].std(),
+            "value_loss_std": diag["epoch_value_loss_std"].std(),
+            "reward_std_std": rstd_t.std(),
+            "deliveries_std": team_per_ep("std",deliv_t),          
+            "block_rate_std": frac("std",blocked_t),               
+            "idle_rate_std": frac("std",noop_t),
+            "pickup_rate_std": frac("std",pickup_t),
+            "deliveries_early_std": team_per_ep("std",deliv_t[:t1]),
+            "deliveries_mid_std": team_per_ep("std",deliv_t[t1:t2]),
+            "deliveries_late_std": team_per_ep("std",deliv_t[t2:]),
+            "block_early_std": frac("std",blocked_t[:t1]),
+            "block_mid_std": frac("std",blocked_t[t1:t2]),
+            "block_late_std": frac("std",blocked_t[t2:]),
+            "distance_traveled_std": team_per_ep("std",distance_traveled_t),
+            "step_time_std": E_per_T("std",step_time_t),
+            "step_count_std": states.step_count.std(),#[E,]
+            "success_std":num_successful("std",deliv_t),
+            "success_rate_std": team_success_rate("std",deliv_t,),
+            "FPS_std": states.step_count.std()/(E_per_T("std",step_time_t)+1e-8),
         }
+        metrics_mean = {
+            "episode_time": delta_time,
+            "episode_return": team_per_ep("mean",rraw_t),
+            "entropy": diag["epoch_entropy"].mean(),#[ppo num_epoch,] if a2c [1,]
+            "loss": diag["epoch_loss"].mean(),
+            "actor_loss": diag["epoch_actor_loss"].mean(),
+            "value_loss": diag["epoch_value_loss"].mean(),
+            "reward_std_mean": rstd_t.mean(),
+            "deliveries": team_per_ep("mean",deliv_t),
+            "block_rate": frac("mean",blocked_t),
+            "idle_rate": frac("mean",noop_t),
+            "pickup_rate": frac("mean",pickup_t),
+            "deliveries_early": team_per_ep("mean",deliv_t[:t1]),
+            "deliveries_mid": team_per_ep("mean",deliv_t[t1:t2]),
+            "deliveries_late": team_per_ep("mean",deliv_t[t2:]), 
+            "block_early": frac("mean",blocked_t[:t1]),
+            "block_mid": frac("mean",blocked_t[t1:t2]),
+            "block_late": frac("mean",blocked_t[t2:]),
+            "distance_traveled":team_per_ep("mean",distance_traveled_t),
+            "step_time":E_per_T("mean",step_time_t),
+            "step_count":states.step_count.mean(),#[E,]
+            "success":num_successful("mean",deliv_t),
+            "success_rate": team_success_rate("mean",deliv_t,),
+            "FPS":states.step_count.mean()/(E_per_T("std",step_time_t)+1e-8),
+        }
+
+        metrics={**metrics_mean, **metrics_std}
 
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
-                _host_log, None, upd_idx,n_updates, metrics["episode_return"],
+                _host_log, None, n_updates,upd_idx, metrics["episode_return"],
                 metrics["entropy"], metrics["deliveries"], metrics["block_rate"],
                 metrics["idle_rate"], ordered=False,
             )
@@ -426,10 +466,10 @@ def make_resumable_train(cfg: MAPPOConfig, live_log: bool = False):
     env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
 
     @functools.partial(jax.jit, static_argnums=(3,))
-    def train_from(carry, base_upd, n,n_updates):
+    def train_from(carry,n_updates, base_upd, n):
         idxs = base_upd + jnp.arange(n)
         total_updates = jnp.full((n,), n_updates)
-        xs=(total_updates,idxs)
+        xs=(idxs,total_updates)
         carry, metrics = jax.lax.scan(update_step, carry, xs, length=n)
         return carry, metrics
 

@@ -55,6 +55,195 @@ DONE: add date/time to runs folder
 
 NOT_DONE: add std/mean to all relvante vairables and stack in results.csv
 
-NOT_DONE: add total_updates to log line
+DONE: add total_updates to log line
 
 DONE: in plot add mean as line std as warrper and vise reverse
+CHECK: add in loss_fn real values and dist,logp,entropy
+        _, dist = actor.apply(p["actor"], h0(), (obs_flat_T, gru_resets))
+        logp = dist.log_prob(act_flat_T).reshape(T, E, N)
+        entropy = dist.entropy().reshape(T, E, N)
+        _, values = critic.apply(p["critic"], h0(), (central_T, gru_resets))
+        values = values.reshape(T, E, N)
+            _, v_target = critic.apply(target_critic, h0(), (central_T, gru_resets))
+    from mappo update
+    v_target = v_target.reshape(T, E, N)
+    returns = compute_nstep_returns(rstd_TEN, dones_TEN, v_target, cfg.n_steps, cfg.gamma)
+    returns = jax.lax.stop_gradient(returns)
+NOT_DONE: 
+step_time is float[T,E,] over time envs elapsed time of each env step
+step_count is int32[E,] over envs count each env step
+what is "FPS":frac(states.step_count/E_per_T_mean(step_time_t)),
+success is scalar mean_num_successful, deliv_t is int32[T,E,N]
+        mean_num_successful = (deliv_t.sum(axis=0) > 0).sum(axis=-1).mean()
+success_rate is scalar team_success_rate,deliv_t is int32[T,E,N]
+        team_success_rate = jnp.all((deliv_t.sum(axis=0) > 0), axis=-1).mean()
+
+        #success = fraction of envs where all N deliveries happened at 
+        least once during the episode
+        # Deliveries: int [T, E, N] = Deliveries per step, per env and per agent
+        #1) Summary of deliveries per risk throughout the episode -> [E, N]
+        #2) Did each agent succeed at least once -> bool [E, N]
+        #3) Number of successful agents in each env -> [E]
+        #4) Rate of successful agents in each env -> [E] (0..1)
+        #5) Did all agents in env succeed (team success) -> [E] bool
+
+
+
+episode_time is float[chunk,] over update_step count
+
+deliv_t is int32[T,E,N] over time envs per-agent delivery count the agent delivery 
+requsted shelf to goal
+
+blocked_t is bool[T,E,N] over time envs per-agent check the agent tried to step forward,
+lost movement contention, and
+was not a voluntary carry-into-shelf cancel -> a collision/contention proxy.
+
+noop_t is bool[T,E,N] over time envs per-agent check the agent choose noop action
+
+pickup_t is bool[T,E,N] over time envs per-agent check the agent choose 
+action TOGGLE_LOAD on real shelf when not carry shelf 
+
+drop_t is bool[T,E,N] over time envs per-agent check the agent choose
+action TOGGLE_LOAD when carry shelf and not on_highway(agents transit areas)
+
+distance_traveled_t is int32[T,E,N] is over time envs per-agent accumulative count the agents
+forward steps 
+
+rstd_t is float32[T,E,N] standardised rewards(welford standardised) 
+over time envs per various accumulative rewards per-agent
+two-stage: 
+stage_one: agent delivered shelf in prev step and drop it on shelfs clusters get +0.5 
+stage_tow: agent delivered shelf in current step get +0.5
+global: agent delivered shelf all agents get +1
+individual: agent delivered shelf get +1
+standardised rewards(welford standardised) is 
+
+welford standardised is
+performs a streaming update of mean and variance according to the Wolford algorithm 
+and returns the normalized rewards (z-score) relative to the history so far.
+
+after envs one step
+welford, rstd = _welford_standardise(welford_prev, rewards)
+def welford():
+wmean = prev_wmean +((rewards - prev_wmean) / (sumw_prev + 1.0))
+m2 = prev_m2 + (rewards - prev_wmean) * ((rewards - prev_wmean) / (sumw_prev + 1.0)) * prev_sumw
+sumw = prev_sumw + 1.0
+n = prev_n + 1.0
+var = (m2 * n) / ((prev_sumw + 1.0) * (prev_n) + 1e-12)
+std = (rewards - wmean) / (jnp.sqrt(var) + 1e-6)
+rstd = rewards if n=1 else std
+
+
+
+Receives an aggregate state (sumw, wmean, m2, n) in the form float32[E,N] 
+and a new rewards in the form [E,N].
+
+Updates the weighted mean (wmean) and 
+m2 (the sum of the squared deviations needed to calculate the variance) 
+in an online update with a weight of 1.
+
+Calculates the variance/standard deviation of the aggregate and calculates the z-score:
+std = (rewards - wmean) / (jnp.sqrt(var) + 1e-6)
+
+If this is the first step (n <= 1) returns the raw rewards instead of normalizing it.
+
+Returns the updated state (sumw, wmean, m2, n) and the processed rewards.
+
+Why it's good
+Provides real-time rewards normalization without storing a full history.
+
+Improves stability in training by uniformly scaling rewards; includes a small addition to the standard deviation to prevent division by zero.
+
+       """
+       #diag shape[ppo_num_epochs,] in a2c ppo_num_epochs=1 [-1] Gives only the values of the last epoch.
+        Entropy = the measure of policy uncertainty for each agent at each step.
+        Per-agent policy entropy - Entropy of each agent about its policy (at a given state/step). Measures local exploration.
+        High entropy value = more random/exploratory policy; 
+        low value = more deterministic/exploitative(greedy) policy. 
+        Changing entropy_coef regulates the balance between exploration and exploitation.
+        Decreasing entropy can indicate conflicts, agent dominance, or overfitting.
+        Diversity/Coordination Index: Checks whether agents choose actions that are too diverse or coordinated.
+        
+        value loss
+        Error measure in regression of the value:(sigma)sum((R-V)^2)
+        High value loss = Critic is not suitable for returns(large errors), 
+        which causes a shaky advantage and bad gradients for the policy. 
+        affects training stability.
+        Reasons: errors in calculating returns, unstable bootstrapping, or slow learning of 
+        the criticality.
+        Low value loss = The criticality predicts returns well; will contribute to stability in training.
+        
+        actor loss
+        Measures how much policy should change according to the advantage: -(sigma)sum(log*pie(a|s)*A).
+        High actor loss (especially without entropy) = Policy does not properly exploit benefits; 
+        low entropy can indicate early convergence.
+        Low actor loss = The policy chooses more actions with a positive benefit (more deliveries);
+        not necessarily good if caused at the expense of exploration (entropy check).
+        
+        The total loss
+        loss=actor_loss+value_loss_coef(lamda)*value_loss: measures what the optimizer is trying to minimize.
+        A combination of the policy mismatch to the benefits (actor) 
+        and the critic's inaccuracy (value). High value = problem/mismatch;
+        low value = better match according to the defined criteria.
+
+        Short practical recommendations
+        If value_loss is high → improve crit: more crit updates, different learning rate,
+        or target/value normalization.
+
+        If actor_loss is high and entropy is high → policy is still exploring;
+        you can wait or gradually reduce entropy_coef.
+
+        If actor_loss is high and entropy is low → real problem in policy;
+        check advantage/observations/architecture.
+
+        Summary: High loss indicates problems in policy or critic (or both);
+        decomposing loss into components and per-agent/time analysis is the way
+        to diagnose and fix.
+
+        rstd_t,#standardised rewards(welford standardised) #rstd_t.shape=(T, E, N)
+
+        fraction = proportion / rate.
+        This is calculated as count / total values in range [0,1]
+.       To get percentage multiply by 100.
+
+        team_per_ep_std 
+          measures the standard deviation across environments of 
+          the total number of passes (or any other sum) over the episode.
+          it measures the dispersion/inconsistency across the envs.
+        team_per_ep_mean  
+          measures the mean across environments of  
+          the total number of passes (or any other sum) over the episode.  
+          it measures the average total per env, i.e., the central tendency across the envs.
+        
+        How is it calculated
+        (in the context of team_per_ep = lambda x: x.sum(axis=0).sum(axis=-1).mean())
+        x.sum(axis=0) sums over time → form [E, N].
+        .sum(axis=-1) sums over agents → form [E] (total number of passes per env).
+        .mean() takes the average over the envs or 
+        .std() takes the standard deviation over the envs
+        
+        **frac_mean**  
+        measures the mean (proportion) of the tensor's [T,E,N] values (e.g., event indicator) 
+        across the aggregated axes. 
+        it reports the average rate (0..1) — the central tendency of the event occurrence.
+
+        **frac_std**  
+        measures the standard deviation of the tensor's [T,E,N] values (e.g., event indicator) 
+        across the aggregated axes. 
+        it reports the dispersion/variability of the rate 
+        (how much the proportion fluctuates across samples).
+
+        **E_per_T_mean**  
+        measures the mean over time for each environment (and remaining dims), 
+        i.e., the average per-time value per env. 
+        it reports the time-averaged central tendency for every env.
+        #ex. shape[i,j]=>shape[j]={mean over j i times}
+
+        **E_per_T_std**  
+        measures the standard deviation over time for each environment (and remaining dims).
+        it reports the temporal dispersion/instability within each env 
+        (how much the per‑time values vary across the episode).
+
+        success = fraction of envs where all N deliveries happened at least once during the episode
+           
+        """

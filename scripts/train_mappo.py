@@ -167,7 +167,8 @@ def main():
     upd = start
     while upd < n_updates:
         k = min(chunk, n_updates - upd)
-        carry, metrics = trainer["train_from"](carry, upd, k,n_updates)
+        
+        carry, metrics = trainer["train_from"](carry=carry, base_upd=upd, n=k,n_updates=n_updates)
         carry = jax.block_until_ready(carry)
 
         # all per-update metrics for this chunk, as np arrays of shape [k]
@@ -180,29 +181,53 @@ def main():
             logger.log({
                 "environment_steps": done_count * batch_steps,
                 "updates": done_count,
-                "mean_episode_returns": ret_i,
-                "entropy": float(m["entropy"][i]),
-                "loss": float(m["loss"][i]),
-                "actor_loss": float(m["actor_loss"][i]),
-                "value_loss": float(m["value_loss"][i]),
-                "reward_std_mean": float(m["reward_std_mean"][i]),
-                "deliveries": float(m["deliveries"][i]),
-                "block_rate": float(m["block_rate"][i]),
-                "idle_rate": float(m["idle_rate"][i]),
-                "pickup_rate": float(m["pickup_rate"][i]),
-                "deliveries_early": float(m["deliveries_early"][i]),
-                "deliveries_mid": float(m["deliveries_mid"][i]),
-                "deliveries_late": float(m["deliveries_late"][i]),
-                "block_early": float(m["block_early"][i]),
-                "block_mid": float(m["block_mid"][i]),
-                "block_late": float(m["block_late"][i]),
-                "distance_traveled": int(m["distance_traveled"][i]),
-                "step_time": float(m["step_time"][i]),
-                "episode_time":float(m["episode_time"][i]),
-                "step_count":int(m["step_count"][i]),
-                "FPS":float(m["FPS"][i]),
-                "success":float(m["success"][i]),
-                "success_rate":float(m["success_rate"][i]),
+                "episode_time":metrics["episode_time"][i],
+                "mean_episode_returns": float(m["episode_return"][i]),
+                "mean_entropy": float(m["entropy"][i]),
+                "mean_loss": float(m["loss"][i]),
+                "mean_actor_loss": float(m["actor_loss"][i]),
+                "mean_value_loss": float(m["value_loss"][i]),
+                "mean_reward_std": float(m["reward_std_mean"][i]),
+                "mean_deliveries": float(m["deliveries"][i]),
+                "mean_block_rate": float(m["block_rate"][i]),
+                "mean_idle_rate": float(m["idle_rate"][i]),
+                "mean_pickup_rate": float(m["pickup_rate"][i]),
+                "mean_deliveries_early": float(m["deliveries_early"][i]),
+                "mean_deliveries_mid": float(m["deliveries_mid"][i]),
+                "mean_deliveries_late": float(m["deliveries_late"][i]),
+                "mean_block_early": float(m["block_early"][i]),
+                "mean_block_mid": float(m["block_mid"][i]),
+                "mean_block_late": float(m["block_late"][i]),
+                "mean_distance_traveled": int(m["distance_traveled"][i]),
+                "mean_step_time": float(m["step_time"][i]),
+                "mean_episode_time":float(m["episode_time"][i]),
+                "mean_step_count":int(m["step_count"][i]),
+                "mean_success":float(m["success"][i]),
+                "mean_success_rate":float(m["success_rate"][i]),
+                "mean_FPS":float(m["FPS"][i]),
+
+                "std_episode_return": float(m["episode_return_std"][i]),
+                "std_entropy": float(m["entropy_std"][i]),
+                "std_loss": float(m["loss_std"][i]),
+                "std_actor_loss": float(m["actor_loss_std"][i]),
+                "std_value_loss": float(m["value_loss_std"][i]),
+                "std_reward_std": float(m["reward_std_std"][i]),
+                "std_deliveries": float(m["deliveries_std"][i]),          
+                "std_block_rate": float(m["block_rate_std"][i]),              
+                "std_idle_rate": float(m["idle_rate_std"][i]),
+                "std_pickup_rate": float(m["pickup_rate_std"][i]),
+                "std_deliveries_early": float(m["deliveries_early_std"][i]),
+                "std_deliveries_mid": float(m["deliveries_mid_std"][i]),
+                "std_deliveries_late": float(m["deliveries_late_std"][i]),
+                "std_block_early": float(m["block_early_std"][i]),
+                "std_block_mid": float(m["block_mid_std"][i]),
+                "std_block_late": float(m["block_late_std"][i]),
+                "std_distance_traveled": float(m["distance_traveled_std"][i]),
+                "std_step_time": float(m["step_time_std"][i]),   
+                "std_step_count": float(m["step_count_std"][i]),
+                "std_success":float(m["success_std"][i]),
+                "std_success_rate":float(m["success_rate_std"][i]),
+                "std_FPS": float(m["FPS_std"][i]),
             })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
@@ -210,7 +235,7 @@ def main():
         # Layer 2: one behavioral commentary block per chunk (host-side, between
         # chunks -> no effect on the fused-scan rollout speed).
         if narrator is not None:
-            stats = {key: float(m[key].mean()) for key in (
+            stats = {key: float(m[key].mean()) for key in (#[k,]
                 "episode_return", "deliveries", "block_rate", "idle_rate",
                 "deliveries_early", "deliveries_mid", "deliveries_late")}
             print(narrator.chunk(upd, stats), flush=True)

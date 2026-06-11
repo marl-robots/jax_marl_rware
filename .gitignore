@@ -10,7 +10,7 @@ venv/
 build/
 dist/
 *.log
-
+metrics_Must-have.md
 # training outputs (checkpoints, results.csv, config.json)
 runs/
 
