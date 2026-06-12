@@ -186,6 +186,10 @@ def load_run(run_dir: str) -> RunData:
     csv_path = os.path.join(run_dir, "results.csv")
     try:
         df = pd.read_csv(csv_path)
+        # interrupted-and-restarted runs can leave stray header rows mid-file;
+        # coerce everything numeric and drop the casualties
+        df = df.apply(pd.to_numeric, errors="coerce")
+        df = df.dropna(subset=["updates"]) if "updates" in df.columns else df
         if "updates" in df.columns:
             df = df.sort_values("updates").reset_index(drop=True)
     except (FileNotFoundError, pd.errors.EmptyDataError):
@@ -222,6 +226,28 @@ def _steps_to_threshold(df: pd.DataFrame, col: str, thresh: float) -> Optional[i
         return None
     hit = df[df[col] >= thresh]
     return int(hit["environment_steps"].iloc[0]) if len(hit) else None
+
+
+def leaderboard(runs: list["RunData"]) -> pd.DataFrame:
+    """One row per run, the columns the Overview tab ranks/medals on."""
+    rows = []
+    for r in runs:
+        s = summarize(r)
+        rows.append({
+            "run": r.name,
+            "algo": r.label,
+            "family": r.family,
+            "env": s.get("env", ""),
+            "env_steps": s.get("env_steps", 0),
+            "final_return": s.get("final_return", 0.0),
+            "best_return": s.get("best_return", 0.0),
+            "deliveries": s.get("final_deliveries", 0.0),
+            "steps_to_half_best": s.get("steps_to_half_best"),
+            "contention": s.get("final_contention", 0.0),
+            "idle": s.get("final_idle", 0.0),
+            "entropy": s.get("final_entropy", 0.0),
+        })
+    return pd.DataFrame(rows)
 
 
 def summarize(run: RunData) -> dict:
