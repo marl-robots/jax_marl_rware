@@ -19,13 +19,13 @@ Examples (WSL, conda env jax_env_1):
 from __future__ import annotations
 
 import argparse
+import os
 
 import jax
 
 from algorithms.checkpoint import CheckpointManager, has_checkpoint
 from algorithms.config import MAPPOConfig
-from algorithms.mappo import make_resumable_train
-from algorithms.replay import make_recorder, save_replay
+from algorithms.replay import make_recorder, make_seac_recorder, save_replay
 
 
 def main():
@@ -40,6 +40,9 @@ def main():
     ap.add_argument("--seed", type=int, default=0, help="replay RNG seed")
     ap.add_argument("--greedy", action="store_true",
                     help="argmax actions instead of sampling")
+    ap.add_argument("--seac", action="store_true",
+                    help="treat the run as SEAC (per-agent params); "
+                         "auto-detected from a run-dir name starting 'seac'")
     args = ap.parse_args()
 
     if not has_checkpoint(args.run_dir):
@@ -62,20 +65,30 @@ def main():
                 raise SystemExit(
                     f"step {steps[0]} not in saved steps {mgr.all_steps()}")
 
+    is_seac = args.seac or os.path.basename(
+        os.path.normpath(args.run_dir)).lower().startswith("seac")
+    if is_seac:
+        from algorithms.seac import make_resumable_train
+        algo_name = "seac"
+    else:
+        from algorithms.mappo import make_resumable_train
+        algo_name = cfg.algo
     trainer = make_resumable_train(cfg)
-    recorder = make_recorder(trainer["env"], trainer["actor"], cfg)
+    rec_factory = make_seac_recorder if is_seac else make_recorder
+    recorder = rec_factory(trainer["env"], trainer["actor"], cfg)
     carry = trainer["init_carry"](jax.random.PRNGKey(0))  # restore target
 
     for step in steps:
         restored = mgr.restore(step, carry)
-        actor_params = restored[0]["actor"]
+        # mappo carry: (params dict, ...); seac carry: (actor_params, ...)
+        actor_params = restored[0] if is_seac else restored[0]["actor"]
         for ep in range(args.episodes):
             key = jax.random.PRNGKey(args.seed + ep)
             traj, scalars = recorder(actor_params, key, args.greedy)
             path = save_replay(
                 args.run_dir, traj, scalars, env=trainer["env"], cfg=cfg,
                 update=step, env_steps=step * cfg.batch_steps,
-                seed=args.seed + ep, greedy=args.greedy, algo=cfg.algo)
+                seed=args.seed + ep, greedy=args.greedy, algo=algo_name)
             print(f"update {step}  seed {args.seed + ep}  "
                   f"return {float(scalars[0]):.2f}  "
                   f"deliveries {int(scalars[1])}  -> {path}")

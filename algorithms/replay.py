@@ -106,6 +106,72 @@ def make_recorder(env, actor, cfg):
     return record
 
 
+def make_seac_recorder(env, actor, cfg):
+    """SEAC variant of :func:`make_recorder`: per-agent independent actor
+    params (leading agent axis), each agent acting with its own policy."""
+    N = cfg.n_agents
+    obs_dim = env.obs_dim
+    H = cfg.hidden_dim
+    T = cfg.time_limit
+    resets_11 = jnp.zeros((1, 1))
+
+    def act_i(p_i, h_i, o_i):                  # o_i [obs], h_i [1, H]
+        h_i, dist = actor.apply(p_i, h_i, (o_i[None, None], resets_11))
+        return h_i, dist.logits[0, 0]          # [A]
+
+    @functools.partial(jax.jit, static_argnums=(2,))
+    def record(actor_params, key, greedy: bool = False):
+        kreset, krun = jax.random.split(key)
+        state0, obs0 = env.reset(kreset)
+        h0 = jnp.zeros((N, 1, H))              # per-agent hidden, single env
+
+        def step(carry, _):
+            state, obs, h_actor, rng = carry
+            rng, ksamp = jax.random.split(rng)
+            obs_N = obs.reshape(N, obs_dim)
+            h_actor, logits = jax.vmap(act_i)(actor_params, h_actor, obs_N)
+            if greedy:
+                actions = jnp.argmax(logits, axis=-1)
+            else:
+                actions = jax.random.categorical(ksamp, logits)
+            nstate, nobs, reward, done, info = env.step(state, actions)
+            out = {
+                "state": nstate,
+                "actions": actions,
+                "rewards": reward,
+                "deliveries": info["deliveries"],
+                "blocked": info["forward_blocked"],
+                "noop": info["noop"],
+                "pickup": info["pickup"],
+                "drop": info["drop"],
+            }
+            return (nstate, nobs, h_actor, rng), out
+
+        _, out = jax.lax.scan(step, (state0, obs0, h0, krun), None, length=T)
+        states_T1 = jax.tree_util.tree_map(
+            lambda s0, sT: jnp.concatenate([s0[None], sT], axis=0),
+            state0, out["state"])
+        traj = {
+            "agent_x": states_T1.agent_x,
+            "agent_y": states_T1.agent_y,
+            "agent_dir": states_T1.agent_dir,
+            "agent_carrying": states_T1.agent_carrying,
+            "shelf_x": states_T1.shelf_x,
+            "shelf_y": states_T1.shelf_y,
+            "in_queue": states_T1.in_queue,
+            "actions": out["actions"],
+            "rewards": out["rewards"],
+            "deliveries": out["deliveries"],
+            "blocked": out["blocked"],
+            "noop": out["noop"],
+            "pickup": out["pickup"],
+            "drop": out["drop"],
+        }
+        return traj, (out["rewards"].sum(), out["deliveries"].sum())
+
+    return record
+
+
 def save_replay(run_dir: str, traj, scalars, *, env, cfg, update: int,
                 env_steps: int, seed: int, greedy: bool = False,
                 algo: str | None = None) -> str:
