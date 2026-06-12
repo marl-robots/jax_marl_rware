@@ -167,8 +167,9 @@ if not runs:
     st.info("Select one or more runs in the sidebar.")
     st.stop()
 
-tab_overview, tab_compare, tab_theater, tab_detail = st.tabs(
-    ["🏆 Overview", "📊 Compare", "🎬 Replay theater", "🔎 Run detail"])
+tab_overview, tab_compare, tab_theater, tab_story, tab_detail = st.tabs(
+    ["🏆 Overview", "📊 Compare", "🎬 Replay theater", "🧠 Story",
+     "🔎 Run detail"])
 
 # ---------------------------------------------------------------- overview --
 with tab_overview:
@@ -292,6 +293,42 @@ with tab_theater:
             f"from update {chosen[0].update:,} to {chosen[-1].update:,} · "
             "fixed seed ⇒ every visible difference is learning")
         components.html(player_html(snaps), height=player_height(snaps) + 20)
+
+# ------------------------------------------------------------------- story --
+with tab_story:
+    from arena.narrator_llm import (
+        AUDIENCES, backend_status, cached_narration, narrate)
+
+    st.caption("An LLM (or a deterministic fallback) narrates the selected "
+               "runs — every number it may use is measured from results.csv; "
+               "nothing else is shown to the model.")
+    c1, c2, c3 = st.columns([1.2, 1, 1.4])
+    audience = c1.radio("audience", options=list(AUDIENCES),
+                        horizontal=True, index=0)
+    backend = c2.selectbox("backend",
+                           options=["auto", "claude", "ollama", "template"])
+    with c3:
+        status = backend_status()
+        st.caption("backends: " + " · ".join(
+            f"**{b}** {s}" for b, s in status.items()))
+
+    cached = cached_narration(runs, audience)
+    go_btn = st.button("📜 Narrate this selection", type="primary")
+    force = st.checkbox("regenerate (ignore cache)", value=False)
+
+    if go_btn:
+        with st.spinner("the commentator is watching the replays…"):
+            text, used = narrate(runs, audience, backend, use_cache=not force)
+        st.markdown(text)
+        st.caption(f"backend: {used}")
+    elif cached is not None:
+        text, used = cached
+        st.markdown(text)
+        st.caption(f"backend: {used}")
+    else:
+        st.info("No narration cached for this selection yet — press "
+                "**Narrate** (the template backend always works; LLM "
+                "backends are used when available).")
 
 # ------------------------------------------------------------------ detail --
 with tab_detail:

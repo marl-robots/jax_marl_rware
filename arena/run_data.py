@@ -280,11 +280,17 @@ def summarize(run: RunData) -> dict:
     out["return_volatility"] = round(float(ret.tail(max(1, len(ret) // 5)).std()), 3)
     # late collapse: did the tail drop well below the peak?
     out["peak_to_final_drop"] = round(float(ret.max()) - final_ret, 3)
-    # sample efficiency: steps to reach 50% of this run's own best return
+    # milestone thresholds are taken on a smoothed signal so one lucky episode
+    # doesn't count as a milestone
+    sm = df[["environment_steps"]].copy()
+    win = max(1, min(50, len(df) // 4))
+    sm["mean_episode_returns"] = ret.rolling(win, min_periods=win).mean()
+    sm["deliveries"] = df["deliveries"].rolling(win, min_periods=win).mean()
+    # sample efficiency: steps to reach 50% of this run's own best (smoothed)
     out["steps_to_half_best"] = _steps_to_threshold(
-        df, "mean_episode_returns", 0.5 * float(ret.max()))
-    # first delivery
-    out["steps_to_first_delivery"] = _steps_to_threshold(df, "deliveries", 0.5)
+        sm, "mean_episode_returns", 0.5 * float(sm["mean_episode_returns"].max()))
+    # first sustained deliveries
+    out["steps_to_first_delivery"] = _steps_to_threshold(sm, "deliveries", 0.5)
     # phase tilt of throughput
     e = _tail_mean(df["deliveries_early"])
     m = _tail_mean(df["deliveries_mid"])
