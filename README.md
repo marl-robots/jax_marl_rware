@@ -13,11 +13,15 @@ reference curves ([`deep_marl_data`](https://github.com/uoe-agents/marl-book-cod
 > **Why another JAX warehouse env?** The only prior JAX implementation (Jumanji's
 > `RobotWarehouse`) diverges from canonical RWARE on its difficulty-defining
 > mechanics — it *terminates the episode on collision* (vs. the original's
-> collision **resolution**), drops the two-stage collect→deliver→**return**
-> reward, and (per its own paper, App. A.5 + Future Work) trains it as a
-> **single-agent** task (CTCE), not decentralized MARL. This project provides a
-> parity-validated faithful environment **and** proper decentralized
-> (CTDE / independent) multi-agent training.
+> collision **resolution**; under a random policy **98.4%** of its episodes end
+> early, median length **58/500**), pays a **shared team reward** instead of the
+> benchmark's individual credit, and (per its own paper, App. A.5) trains it as
+> a **single-agent** task (CTCE), not decentralized MARL. Its sequential agent
+> update even makes legal convoy moves terminate the episode *depending on
+> agent id order*. Full investigation with code citations and deterministic
+> reproductions: [docs/jumanji_mava_divergence.md](docs/jumanji_mava_divergence.md).
+> This project provides a parity-validated faithful environment **and** proper
+> decentralized (CTDE / independent) multi-agent training.
 
 ---
 
@@ -39,7 +43,16 @@ algorithms/      PureJaxRL/JaxMARL-style trainers
   seac.py          SEAC (per-agent + shared-experience)   [WIP — see status]
   checkpoint.py    orbax keep-best + keep-last-N + resume
   metrics.py / commentary.py   CSV logging + behavioral commentary
-scripts/         train_mappo / train_seac / render_rollout / bench_launch
+  replay.py        episode trajectory snapshots (.npz) for the dashboard
+arena/           the dashboard layer (pandas/numpy + stdlib; no jax import)
+  app.py           Streamlit app: overview/leaderboard, compare, replay
+                   theater (animated canvas player), LLM story, research
+  player.py        self-contained HTML/JS canvas replay player + evolution tour
+  replay_data.py / run_data.py   data contracts for runs + replays
+  narrator_llm.py  LLM narration (claude CLI / ollama / template fallback)
+docs/            jumanji_mava_divergence.md (investigation) + data/
+scripts/         train_mappo / train_seac / record_replay / render_rollout
+                 / bench_speed / repro_jumanji_divergence / train_queue.sh
 tests/           env parity + collision + MAPPO unit/gradient-parity tests
 ```
 
@@ -66,6 +79,12 @@ python -m scripts.train_mappo --algo mappo --resume                   # continue
 
 # render a trained checkpoint to mp4/gif/png
 python -m scripts.render_rollout --run-dir runs/mappo_tiny-4ag_seed2 --step best
+
+# record replay snapshots from a finished run (for the dashboard theater)
+python -m scripts.record_replay --run-dir runs/mappo_tiny-4ag_seed2 --episodes 2
+
+# the dashboard (overview · compare · replay theater · LLM story · research)
+streamlit run arena/app.py
 ```
 
 The **2×2** is two flags: `centralised_critic` × `use_ppo` →
