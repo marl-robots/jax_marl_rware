@@ -18,7 +18,7 @@ COLUMNS = [
     "updates",
     "episode_time",
     "mean_episode_returns",
-    "std_episode_return",
+    "std_episode_returns",
     "mean_entropy",
     "std_entropy",
     "mean_loss",

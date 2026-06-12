@@ -206,7 +206,7 @@ def main():
                 "mean_success_rate":float(m["success_rate"][i]),
                 "mean_FPS":float(m["FPS"][i]),
 
-                "std_episode_return": float(m["episode_return_std"][i]),
+                "std_episode_returns": float(m["episode_return_std"][i]),
                 "std_entropy": float(m["entropy_std"][i]),
                 "std_loss": float(m["loss_std"][i]),
                 "std_actor_loss": float(m["actor_loss_std"][i]),

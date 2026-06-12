@@ -1,0 +1,37 @@
+more Metrics:
+ENV Metrics:
+if from env state shape[E,]
+if from env info shape [T,E,N]
+episode over time each env per_robot:
+    what it see
+        count how many shelfs -> 
+        count how many req_shelf -> 
+        count how many robot -> 
+        count how many goal -> 
+    USEAGE:
+        if walk in surrunding?
+        count if it see 2 previous steps goal and now it get to goal 
+        count if it see 2 previous steps goal and now it get to goal 
+    count step with shelf -> count steps between tow drops 
+    count step without shelf -> count steps not between tow drops
+    count step with req_shelf -> count steps between tow drops
+    count step without req_shelf -> count steps not between tow drops
+
+    count collected shelf -> when it start pick only shelf?
+    count collected req_shelf -> when start pick only req_shelf?
+Hardware Metrics:
+    per relative procces CPU%/GPU%/Both if CUDA/%MEM  
+    CPU%  ps -p <PID> -o %cpu,%mem,cmd
+
+    GPU% nvidia-smi pmon 
+    nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv
+  
+train_form(chunk=k=n=100)->update_step()->
+parallel_envs=E=10 env.reset() ->
+obs=[E=10,N=4,obs=71]->obs dims=E*N*71
+rollout_step(obs,T=env time_limit=500)->B=batch_size=E*N,obs over envs per-agent ->
+
+Q/N=a.b=N*a+b/N=N*a+(Q_whole-N*a)/N or (Q_whole mod(N))/N
+8691.4s mappo on CPU
+3340.7s maa2c on CPU
+

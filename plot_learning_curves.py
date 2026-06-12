@@ -10,36 +10,9 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import numpy as np
 from datetime import datetime
+from algorithms.metrics import COLUMNS
 
-COLUMNS = [
-    "environment_steps",
-    "updates",
-    "mean_episode_returns",
-    "entropy",
-    "loss",
-    "actor_loss",
-    "value_loss",
-    "reward_std_mean",
-    "episode_time",
-    # behavioral signals (commentary)
-    "success",
-    "success_rate",
-    "step_time",
-    "step_count",
-    "FPS",
-    "distance_traveled",
-    "deliveries",
-    "block",
-    "block_rate",
-    "idle_rate",
-    "pickup_rate",
-    "deliveries_early",
-    "deliveries_mid",
-    "deliveries_late",
-    "block_early",
-    "block_mid",
-    "block_late",
-]
+
 # ============================================================
 # Graph categories
 # ============================================================
@@ -49,26 +22,25 @@ GRAPH_CATEGORIES = {
         "episode_time",
     ],
     "coordination": [
-        "deliveries",
-        "pickup_rate",
-        "block",
-        "idle_rate",
-        "distance_traveled",
+        "mean_deliveries",
+        "mean_pickup_rate",
+        "mean_block_rate",
+        "mean_idle_rate",
+        "mean_distance_traveled",
     ],
-    "coordination_scatter": [("block", "deliveries")],
+    "coordination_scatter": [("mean_block_rate", "mean_deliveries")],
     "success": [
-        "success",
-        "success_rate",
+        "mean_success",
+        "mean_success_rate",
     ],
-    "success_time": [("environment_steps", "success_rate")],
+    "success_time": [("environment_steps", "mean_success_rate")],
     "system": [
-        "FPS",
-        "step_time",
-        "step_count",
+        "mean_FPS",
+        "mean_step_time",
+        "mean_step_count",
         "updates",
     ],
-    "system_scatter": [("updates", "FPS")],
-    "behavior": [("idle_rate", "distance_traveled")],
+    "system_scatter": [("updates", "mean_FPS")],
 }
 METRICS_LIST = [
     "Performance",
@@ -92,6 +64,8 @@ IGNORE_KEYS_LIST = [
 # ============================================================
 # Utility: smoothing
 # ============================================================
+
+
 def smooth(series: Series, window=50) -> Series:
     return series.rolling(window, min_periods=1).mean()
 
@@ -105,7 +79,7 @@ def extract_config_path(csv_path: str):
     return str(config_path.__next__())
 
 
-def load_yaml(path):
+def load_cfg_json(path):
     if path is None:
         return {}
     with open(path, "r") as f:
@@ -121,6 +95,7 @@ def flatten_dict(d, parent_key=""):
         else:
             items[new_key] = v
     return items
+
 
 def checkMissingfiles(base: Path):
 
@@ -152,7 +127,8 @@ def checkMissingfiles(base: Path):
 # Label builder (algorithm + env + differing params)
 # ============================================================
 def build_labels(csv_paths):
-    configs = [flatten_dict(load_yaml(extract_config_path(p))) for p in csv_paths]
+    configs = [flatten_dict(load_cfg_json(extract_config_path(p)))
+               for p in csv_paths]
 
     all_keys = set().union(*configs)
     differing = []
@@ -162,9 +138,9 @@ def build_labels(csv_paths):
             vals = [v for v in vals if v is not None]
         if len(set(map(str, vals))) > 1 and key not in IGNORE_KEYS_LIST:
             differing.append(key)
-                
+
     labels = []
-    
+
     for cfg in configs:
         parts = []
         algo = cfg.get("algo_name", "algo?")
@@ -175,24 +151,20 @@ def build_labels(csv_paths):
         parts.append(f"{algo}@rware-{size}-{n_agents}ag-{difficulty}")
         for key in differing:
             if key in cfg:
-                if "layout_path" in key:#TODO :for now not exist
+                if "layout_path" in key:  # TODO :for now not exist
                     layout_name = Path(cfg[key]).stem
                     parts.append(f"{layout_name}")
                 else:
                     if "lr" in key:
                         s = f"{cfg[key]:.0e}"
-                        s = s.replace("e-0", "e-")#.replace("e+0", "e+")
+                        s = s.replace("e-0", "e-")  # .replace("e+0", "e+")
                         parts.append(f"{key}={s}")
-                    else:    
+                    else:
                         parts.append(f"{key}={cfg[key]}")
-                
 
         labels.append(" | ".join(parts))
 
     return labels
-
-
-
 
 
 # ============================================================
@@ -210,20 +182,21 @@ def plot_learning_curves(
         df = pd.read_csv(path)
         if metric_x not in df or metric_y not in df:
             continue
-        
 
         x = df[metric_x]
-        #y = smooth(df[metric_y], window)
-        
+        # y = smooth(df[metric_y], window)
+
         if "mean" in metric_y:
-            cv = df[metric_y].replace("mean", "std") / (df[metric_y] + 1e-8)
-            mean_s =smooth(df[metric_y], window)
-            std_s =smooth(cv, window)
+            std = df[metric_y].replace("mean", "std")
+            cv = std / (df[metric_y] + 1e-8)
+            mean_s = smooth(df[metric_y], window)
+            std_s = smooth(cv, window)
 
         else:
-            cv = df[metric_y].replace("std", "mean") / (df[metric_y] + 1e-8)
-            mean_s = smooth(df[metric_y].replace("std", "mean"), window)
-            std_s = smooth(cv, window)
+            mean = df[metric_y].replace("std", "mean")
+            cv = mean / (df[metric_y] + 1e-8)
+            mean_s = smooth(mean, window)
+            std_s = smooth(df[metric_y], window)
 
         marker = markers[idx % len(markers)]
 
@@ -236,7 +209,7 @@ def plot_learning_curves(
             markevery=max(len(x) // 30, 1),
             markersize=6,
         )
-        
+
         plt.fill_between(x, mean_s-std_s, mean_s+std_s, alpha=0.2)
 
     plt.xlabel(metric_x)
@@ -321,22 +294,24 @@ def compute_meta_for_group(dfs):
         df = df.sort_values("environment_steps")
         if "mean_episode_returns" in df:
             mean_episode_returns.append(
-                np.interp(steps, df["environment_steps"], df["mean_episode_returns"])
+                np.interp(steps, df["environment_steps"],
+                          df["mean_episode_returns"])
             )
         if "std_episode_returns" in df:
             std_returns.append(
-                np.interp(steps, df["environment_steps"], df["std_episode_returns"])
+                np.interp(steps, df["environment_steps"],
+                          df["std_episode_returns"])
             )
 
         if "mean_success_rate" in df:
             mean_success_rate.append(
-                np.interp(steps, df["environment_steps"], df["mean_success_rate"])
+                np.interp(steps, df["environment_steps"],
+                          df["mean_success_rate"])
             )
 
-    returns = np.array(returns)
-    success = np.array(success)
+    returns = np.array(mean_episode_returns)
+    success = np.array(mean_success_rate)
     std_returns = np.array(std_returns)
-
     metrics = {}
 
     # Performance
@@ -344,15 +319,17 @@ def compute_meta_for_group(dfs):
 
     # Stability
     metrics["Stability"] = float(np.mean(np.std(returns, axis=0)))
+    # metrics["Stability"] = float(np.mean(np.std(returns, axis=1)))
 
     # Variance
     metrics["Variance"] = float(np.std(returns[:, -1]))
 
     # Sensitivity
-    metrics["SensitivityToRandomness"] = float(np.std(np.diff(returns, axis=1)))
+    metrics["SensitivityToRandomness"] = float(
+        np.std(np.diff(returns, axis=1)))
 
     # SampleEfficiency
-    sr = np.mean(success_rate, axis=0)
+    sr = np.mean(success, axis=0)
     # print("df="+f"{df['success_rate']}")
     if np.any(sr >= 0.8):
         idx = np.argmax(sr >= 0.8)
@@ -376,13 +353,14 @@ def compute_meta_for_group(dfs):
     last_coll = []
     last_deliv = []
     for df in dfs:
-        if "mean_block" in df:
-            last_coll.append(df["mean_block"].values[-1])
+        if "mean_block_rate" in df:
+            last_coll.append(df["mean_block_rate"].values[-1])
         if "mean_deliveries" in df:
             last_deliv.append(df["mean_deliveries"].values[-1])
 
     if last_coll and last_deliv:
-        metrics["Coordination"] = float(np.mean(last_deliv) / (1 + np.mean(last_coll)))
+        metrics["Coordination"] = float(
+            np.mean(last_deliv) / (1 + np.mean(last_coll)))
     else:
         metrics["Coordination"] = np.nan
 
@@ -405,7 +383,8 @@ def compute_meta_for_group(dfs):
     conv_norm = 1 / (1 + conv / 1e6) if not np.isnan(conv) else 0
 
     # Combine
-    metrics["NormWeightedScore"] = np.mean([perf_norm, stab_norm, samp_norm, conv_norm])
+    metrics["NormWeightedScore"] = np.mean(
+        [perf_norm, stab_norm, samp_norm, conv_norm])
 
     return metrics
 
@@ -413,11 +392,13 @@ def compute_meta_for_group(dfs):
 def plot_meta(csv_paths, save, save_dir, meta_plot, dateTime):
     groups = group_runs_by_label(csv_paths)
 
-    results = {label: compute_meta_for_group(dfs) for label, dfs in groups.items()}
+    results = {label: compute_meta_for_group(
+        dfs) for label, dfs in groups.items()}
 
     for metric in METRICS_LIST:
         if isinstance(meta_plot, str) and meta_plot != metric:
             continue
+
         plt.figure(figsize=(10, 5))
         labels = list(results.keys())
         values = [results[l][metric] for l in labels]
@@ -545,6 +526,16 @@ def main():
         plot_category(
             results, args.category, args.smooth, args.save, args.save_dir, dateTime
         )
+        return
+
+    if args.metric and args.metric not in COLUMNS:
+        columans = COLUMNS
+        columans.remove("environment_steps")
+        columans.remove("updates")
+        columans.sort()
+        print(f"unknown metric {args.metric!r}; choose from")
+        for name in columans:
+            print(name)
         return
 
     if args.metric:
