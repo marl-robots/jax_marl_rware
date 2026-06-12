@@ -43,6 +43,69 @@ from .returns import compute_nstep_returns
 from .mappo import _welford_standardise, _host_log
 
 
+def seac_loss_from_batch(actor, critic, cfg, coefmat, params,
+                         obs_t, act_t, rstd_t):
+    """The SEAC loss on one rollout batch — pure, module-level so the
+    gradient-parity test (tests/test_seac_parity.py) exercises exactly the
+    code the trainer differentiates.
+
+    params = (actor_params, critic_params), each with a leading agent axis N.
+    obs_t [T,E,N,obs], act_t [T,E,N], rstd_t [T,E,N].
+    Returns (loss, (policy_loss, value_loss, mean_entropy, is_mean, is_max)).
+    """
+    ap, cp = params
+    T, E, N = rstd_t.shape
+    obs_dim = obs_t.shape[-1]
+    H = cfg.hidden_dim
+    eye = jnp.eye(N)
+
+    obs_eval = obs_t.reshape(T, E * N, obs_dim)        # all agents' obs, folded
+    act_eval = act_t.reshape(T, E * N)                 # all agents' actions
+    resets_T = jnp.zeros((T, E * N))
+    h0_eval = ScannedGRU.initialize_carry(E * N, H)
+    dones_TEN = jnp.zeros((T, E, N))                   # fresh full episode
+
+    def eval_i(ap_i, cp_i):
+        """Agent i's policy/critic on EVERY agent's trajectory."""
+        _, dist = actor.apply(ap_i, h0_eval, (obs_eval, resets_T))
+        logp = dist.log_prob(act_eval).reshape(T, E, N)     # [T,E,Nk]
+        ent = dist.entropy().reshape(T, E, N)
+        _, v = critic.apply(cp_i, h0_eval, (obs_eval, resets_T))
+        return logp, ent, v.reshape(T, E, N)
+
+    logp, ent, v = jax.vmap(eval_i)(ap, cp)            # each [Ni,T,E,Nk]
+
+    # diagonals: behaving agent's own logp/value on its own data
+    logp_diag = jnp.diagonal(logp, axis1=0, axis2=3)   # [T,E,N]
+    v_diag = jnp.diagonal(v, axis1=0, axis2=3)         # [T,E,N]
+    returns = compute_nstep_returns(
+        rstd_t, dones_TEN, jax.lax.stop_gradient(v_diag),
+        cfg.n_steps, cfg.gamma)                        # [T,E,N]  (per owner k)
+    returns = jax.lax.stop_gradient(returns)
+
+    adv = returns[None] - v                            # [Ni,T,E,Nk]
+    IS = jax.lax.stop_gradient(jnp.exp(logp - logp_diag[None]))
+    if cfg.is_clip > 0.0:   # V-trace-style truncation of the IS weight
+        IS = jnp.minimum(IS, cfg.is_clip)
+    policy_full = -(IS * logp * jax.lax.stop_gradient(adv))
+    value_full = IS * adv ** 2
+
+    mt = lambda x: x.mean(axis=(1, 2))                 # mean over T,E -> [Ni,Nk]
+    policy_loss = (coefmat * mt(policy_full)).sum()
+    value_loss = (coefmat * mt(value_full)).sum()
+    ent_diag = jnp.diagonal(ent, axis1=0, axis2=3)     # [T,E,N]
+    ent_term = ent_diag.mean(axis=(0, 1)).sum()        # sum over agents
+    loss = (policy_loss
+            - cfg.entropy_coef * ent_term
+            + cfg.value_loss_coef * value_loss)
+    # off-diagonal IS diagnostics (i != k): is the shared weight exploding?
+    offb = jnp.broadcast_to((1.0 - eye)[:, None, None, :] > 0, IS.shape)
+    is_off = jnp.where(offb, IS, 0.0)
+    is_mean = is_off.sum() / offb.sum()
+    is_max = jnp.max(is_off)
+    return loss, (policy_loss, value_loss, ent_term / N, is_mean, is_max)
+
+
 def _setup(cfg: MAPPOConfig, live_log: bool = False):
     """Build env + per-agent networks + the per-update step closure.
 
@@ -114,54 +177,10 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             rollout_step, init, None, length=T)
         obs_t, act_t, rstd_t, rraw_t, deliv_t, blocked_t, noop_t = traj  # [T,E,N,*]
 
-        # ---- SEAC loss: N x N cross-evaluation ----
-        obs_eval = obs_t.reshape(T, E * N, obs_dim)        # all agents' obs, folded
-        act_eval = act_t.reshape(T, E * N)                 # all agents' actions
-        resets_T = jnp.zeros((T, E * N))
-        h0_eval = ScannedGRU.initialize_carry(E * N, H)
-        dones_TEN = jnp.zeros((T, E, N))                   # fresh full episode
-
-        def eval_i(ap_i, cp_i):
-            """Agent i's policy/critic on EVERY agent's trajectory."""
-            _, dist = actor.apply(ap_i, h0_eval, (obs_eval, resets_T))
-            logp = dist.log_prob(act_eval).reshape(T, E, N)     # [T,E,Nk]
-            ent = dist.entropy().reshape(T, E, N)
-            _, v = critic.apply(cp_i, h0_eval, (obs_eval, resets_T))
-            return logp, ent, v.reshape(T, E, N)
-
-        def loss_fn(params):
-            ap, cp = params
-            logp, ent, v = jax.vmap(eval_i)(ap, cp)        # each [Ni,T,E,Nk]
-
-            # diagonals: behaving agent's own logp/value on its own data
-            logp_diag = jnp.diagonal(logp, axis1=0, axis2=3)   # [T,E,N]
-            v_diag = jnp.diagonal(v, axis1=0, axis2=3)         # [T,E,N]
-            returns = compute_nstep_returns(
-                rstd_t, dones_TEN, jax.lax.stop_gradient(v_diag),
-                cfg.n_steps, cfg.gamma)                        # [T,E,N]  (per owner k)
-            returns = jax.lax.stop_gradient(returns)
-
-            adv = returns[None] - v                            # [Ni,T,E,Nk]
-            IS = jax.lax.stop_gradient(jnp.exp(logp - logp_diag[None]))
-            if cfg.is_clip > 0.0:   # V-trace-style truncation of the IS weight
-                IS = jnp.minimum(IS, cfg.is_clip)
-            policy_full = -(IS * logp * jax.lax.stop_gradient(adv))
-            value_full = IS * adv ** 2
-
-            mt = lambda x: x.mean(axis=(1, 2))                 # mean over T,E -> [Ni,Nk]
-            policy_loss = (coefmat * mt(policy_full)).sum()
-            value_loss = (coefmat * mt(value_full)).sum()
-            ent_diag = jnp.diagonal(ent, axis1=0, axis2=3)     # [T,E,N]
-            ent_term = ent_diag.mean(axis=(0, 1)).sum()        # sum over agents
-            loss = (policy_loss
-                    - cfg.entropy_coef * ent_term
-                    + cfg.value_loss_coef * value_loss)
-            # off-diagonal IS diagnostics (i != k): is the shared weight exploding?
-            offb = jnp.broadcast_to((1.0 - eye)[:, None, None, :] > 0, IS.shape)
-            is_off = jnp.where(offb, IS, 0.0)
-            is_mean = is_off.sum() / offb.sum()
-            is_max = jnp.max(is_off)
-            return loss, (policy_loss, value_loss, ent_term / N, is_mean, is_max)
+        # ---- SEAC loss: N x N cross-evaluation (module-level, parity-tested) ----
+        loss_fn = functools.partial(
+            seac_loss_from_batch, actor, critic, cfg, coefmat,
+            obs_t=obs_t, act_t=act_t, rstd_t=rstd_t)
 
         (loss, aux), grads = jax.value_and_grad(loss_fn, has_aux=True)(
             (actor_params, critic_params))

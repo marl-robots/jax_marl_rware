@@ -101,7 +101,7 @@ IA2C (ind, A2C) · IPPO (ind, PPO) · MAA2C (cent, A2C) · MAPPO (cent, PPO).
 | IA2C / IPPO / MAA2C | ✅ implemented; MAA2C tracks reference through liftoff (≈4.2 @ 15M vs ref 4.1) |
 | FC vs GRU | ✅ characterized: FC ~11× faster, GRU higher ceiling on RWARE |
 | Checkpointing / resume / render | ✅ |
-| SEAC | ⚠️ **WIP** — loss faithfully transcribed, **not yet validated** (regime mismatch vs canonical short-rollout setup; see commit notes) |
+| SEAC | ⚠️ **partial** — loss/gradients **parity-validated vs a PyTorch transcription of uoe-agents/seac** (`tests/test_seac_parity.py`); training *regime* still differs from canonical (full-episode rollouts + Adam here vs 5-step + RMSprop/clip there) and no machine-readable reference curve exists to close that gap |
 | Value-based (IDQN/VDN/QMIX) | ❌ not yet implemented |
 
 ## Validation philosophy
