@@ -263,6 +263,28 @@ with tab_theater:
         st.info("No replays recorded yet. Train with `--replay-every` or run "
                 "`python -m scripts.record_replay --run-dir runs/<run>` "
                 "on a finished run.")
+    elif st.toggle("🆚 duel mode — two algorithms, same episode seed",
+                   value=False, key="duel"):
+        @st.cache_data(show_spinner="loading replays…")
+        def _payload1(path: str) -> dict:
+            return load_payload(path)
+
+        names = list(runs_with_replays)
+        ca, cb = st.columns(2)
+        pick_a = ca.selectbox("contender A", options=names, index=0,
+                              key="duel_a")
+        pick_b = cb.selectbox("contender B", options=names,
+                              index=min(1, len(names) - 1), key="duel_b")
+        st.caption("each side shows that run's latest replay snapshot for the "
+                   "same episode seed — identical warehouse, identical "
+                   "requests, different brains")
+        for col, pick in ((ca, pick_a), (cb, pick_b)):
+            infos = [i for i in runs_with_replays[pick]
+                     if i.seed == 0 and not i.greedy] or runs_with_replays[pick]
+            snap = _payload1(infos[-1].path)
+            with col:
+                components.html(player_html([snap]),
+                                height=player_height([snap]) + 20)
     else:
         csel, cvar, cinfo = st.columns([2, 1, 2])
         pick = csel.selectbox("run", options=list(runs_with_replays),
