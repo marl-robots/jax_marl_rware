@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
+from arena.player import player_html, player_height
+from arena.replay_data import list_replays, load_payload
 from arena.run_data import (
     METRIC_GROUPS,
     RunData,
@@ -116,7 +119,8 @@ if not runs:
     st.info("Select one or more runs in the sidebar.")
     st.stop()
 
-tab_compare, tab_detail = st.tabs(["📊 Compare", "🔎 Run detail"])
+tab_compare, tab_theater, tab_detail = st.tabs(
+    ["📊 Compare", "🎬 Replay theater", "🔎 Run detail"])
 
 with tab_compare:
     # headline scorecards
@@ -138,6 +142,46 @@ with tab_compare:
             with gcols[i % len(gcols)]:
                 st.plotly_chart(_line_chart(runs, col, label),
                                 use_container_width=True)
+
+with tab_theater:
+    # runs (selected or not) that actually have recorded replays
+    runs_with_replays = {r.name: list_replays(r.path) for r in all_runs}
+    runs_with_replays = {k: v for k, v in runs_with_replays.items() if v}
+    if not runs_with_replays:
+        st.info("No replays recorded yet. Train with `--replay-every` or run "
+                "`python -m scripts.record_replay --run-dir runs/<run>` "
+                "on a finished run.")
+    else:
+        csel, cvar, cinfo = st.columns([2, 1, 2])
+        pick = csel.selectbox("run", options=list(runs_with_replays),
+                              key="theater_run")
+        infos = runs_with_replays[pick]
+        # one player feed = one (seed, greedy) variant across training updates
+        variants = sorted({(i.seed, i.greedy) for i in infos})
+        vlabel = {v: f"seed {v[0]}" + (" · greedy" if v[1] else "")
+                  for v in variants}
+        var = cvar.selectbox("episode variant", options=variants,
+                             format_func=lambda v: vlabel[v], key="theater_var")
+        chosen = [i for i in infos if (i.seed, i.greedy) == var]
+
+        # keep the embedded payload sane: at most ~24 snapshots, evenly spaced,
+        # always including the first and the last
+        MAX_SNAPS = 24
+        if len(chosen) > MAX_SNAPS:
+            idx = {round(k * (len(chosen) - 1) / (MAX_SNAPS - 1))
+                   for k in range(MAX_SNAPS)}
+            chosen = [chosen[k] for k in sorted(idx)]
+
+        @st.cache_data(show_spinner="loading replays…")
+        def _payloads(paths: tuple[str, ...]) -> list[dict]:
+            return [load_payload(p) for p in paths]
+
+        snaps = _payloads(tuple(i.path for i in chosen))
+        cinfo.caption(
+            f"{len(infos)} replays on disk · showing {len(snaps)} snapshots "
+            f"from update {chosen[0].update:,} to {chosen[-1].update:,} · "
+            "fixed seed ⇒ every visible difference is learning")
+        components.html(player_html(snaps), height=player_height(snaps) + 20)
 
 with tab_detail:
     pick = st.selectbox("run", options=[r.name for r in runs])
