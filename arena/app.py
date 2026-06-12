@@ -167,9 +167,10 @@ if not runs:
     st.info("Select one or more runs in the sidebar.")
     st.stop()
 
-tab_overview, tab_compare, tab_theater, tab_story, tab_detail = st.tabs(
+(tab_overview, tab_compare, tab_theater, tab_story, tab_research,
+ tab_detail) = st.tabs(
     ["🏆 Overview", "📊 Compare", "🎬 Replay theater", "🧠 Story",
-     "🔎 Run detail"])
+     "🔬 Research", "🔎 Run detail"])
 
 # ---------------------------------------------------------------- overview --
 with tab_overview:
@@ -329,6 +330,89 @@ with tab_story:
         st.info("No narration cached for this selection yet — press "
                 "**Narrate** (the template backend always works; LLM "
                 "backends are used when available).")
+
+# ---------------------------------------------------------------- research --
+with tab_research:
+    import json as _json
+
+    st.subheader("Environment throughput")
+    bench_path = os.path.join("docs", "data", "speed_bench.json")
+    if os.path.isfile(bench_path):
+        with open(bench_path) as f:
+            bench = pd.DataFrame(_json.load(f))
+        bench["label"] = bench["impl"] + " · " + bench["device"]
+        fig = go.Figure()
+        palette = {"jaxrware (ours)": ACCENT, "jumanji": "#f58518",
+                   "rware (original)": "#8c8c8c"}
+        for label, gdf in bench.groupby("label"):
+            gdf = gdf.sort_values("batch")
+            impl = gdf["impl"].iloc[0]
+            fig.add_trace(go.Scatter(
+                x=gdf["batch"], y=gdf["steps_per_sec"],
+                mode="lines+markers", name=label,
+                line=dict(color=palette.get(impl, "#c9d6e8"),
+                          dash="dot" if gdf["device"].iloc[0] == "cpu" else "solid"),
+                hovertemplate="batch %{x}<br>%{y:,.0f} steps/s<extra></extra>"))
+        fig.update_layout(xaxis_type="log", yaxis_type="log",
+                          xaxis_title="parallel environments (batch)",
+                          yaxis_title="env steps / second")
+        st.plotly_chart(_styled(fig, "Random-action stepping speed, tiny-4ag "
+                                     "(log-log)", height=420),
+                        use_container_width=True)
+        best = bench.loc[bench["steps_per_sec"].idxmax()]
+        base = bench[bench["impl"] == "rware (original)"]
+        if len(base):
+            ratio = best["steps_per_sec"] / base["steps_per_sec"].iloc[0]
+            st.caption(f"peak: **{best['steps_per_sec']:,.0f} steps/s** "
+                       f"({best['label']}, batch {best['batch']}) — "
+                       f"**{ratio:,.0f}×** the original single-process env.")
+    else:
+        st.info("run `scripts/bench_speed.py` to populate the speed benchmark")
+
+    st.divider()
+    st.subheader("Why the only other JAX 'RWARE' is a different benchmark")
+    repro_path = os.path.join("docs", "data", "divergence_repro.json")
+    if os.path.isfile(repro_path):
+        with open(repro_path) as f:
+            rep = _json.load(f)
+        jj, rw = rep.get("jumanji", {}), rep.get("rware", {})
+        jr, rr = jj.get("random_policy", {}), rw.get("random_policy", {})
+        c1, c2, c3 = st.columns(3)
+        c1.metric("episodes ending early (random policy)",
+                  f"{jr.get('terminated_early_frac', 0) * 100:.1f}%",
+                  f"rware: {rr.get('terminated_early_frac', 0) * 100:.0f}%",
+                  delta_color="inverse")
+        c2.metric("median episode length",
+                  f"{jr.get('median_length', 0):.0f} / 500",
+                  f"rware: {rr.get('median_length', 0):.0f} / 500",
+                  delta_color="inverse")
+        c3.metric("legal convoy move terminates?",
+                  "id-dependent",
+                  "rware: never", delta_color="inverse")
+        rows = [
+            ("Legal convoy move (follower id 0) ends episode",
+             jj.get("convoy_follower_id0_terminates"),
+             rw.get("convoy_follower_id0_terminates")),
+            ("Same move, agent ids swapped, ends episode",
+             jj.get("convoy_follower_id1_terminates"),
+             rw.get("convoy_follower_id1_terminates")),
+            ("Head-on contention ends episode",
+             jj.get("contention_terminates"),
+             rw.get("contention_terminates")),
+            ("…and leaves two agents on the same cell",
+             jj.get("contention_same_cell"), False),
+        ]
+        st.dataframe(pd.DataFrame(
+            [(q, "💥 yes" if a else "✓ no", "💥 yes" if b else "✓ no")
+             for q, a, b in rows],
+            columns=["scenario", "Jumanji 1.1.1", "original rware"]),
+            use_container_width=True, hide_index=True)
+        st.caption("Full investigation with code citations: "
+                   "`docs/jumanji_mava_divergence.md` · reproduce with "
+                   "`scripts/repro_jumanji_divergence.py`")
+    else:
+        st.info("run `scripts/repro_jumanji_divergence.py` to populate "
+                "the divergence findings")
 
 # ------------------------------------------------------------------ detail --
 with tab_detail:

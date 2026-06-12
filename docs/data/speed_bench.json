@@ -1,0 +1,56 @@
+[
+ {
+  "impl": "rware (original)",
+  "device": "cpu",
+  "batch": 1,
+  "steps_per_sec": 2746.1,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "single python process; vector envs scale ~linearly with CPU workers"
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "cpu",
+  "batch": 1,
+  "steps_per_sec": 113303.3,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "cpu",
+  "batch": 32,
+  "steps_per_sec": 89572.0,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "cpu",
+  "batch": 256,
+  "steps_per_sec": 173121.2,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "cpu",
+  "batch": 1024,
+  "steps_per_sec": 171759.8,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "cpu",
+  "batch": 4096,
+  "steps_per_sec": 202030.7,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ }
+]
