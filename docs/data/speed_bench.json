@@ -97,5 +97,95 @@
   "task": "tiny-4ag",
   "host": "pavilion",
   "note": "jumanji 1.1.1; terminates on collision (not reset)"
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "gpu",
+  "batch": 1,
+  "steps_per_sec": 11274.3,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "gpu",
+  "batch": 32,
+  "steps_per_sec": 321691.5,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "gpu",
+  "batch": 256,
+  "steps_per_sec": 2197153.3,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "gpu",
+  "batch": 1024,
+  "steps_per_sec": 7440130.2,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jaxrware (ours)",
+  "device": "gpu",
+  "batch": 4096,
+  "steps_per_sec": 9126689.9,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": ""
+ },
+ {
+  "impl": "jumanji",
+  "device": "gpu",
+  "batch": 1,
+  "steps_per_sec": 4497.5,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "jumanji 1.1.1; terminates on collision (not reset)"
+ },
+ {
+  "impl": "jumanji",
+  "device": "gpu",
+  "batch": 32,
+  "steps_per_sec": 89602.9,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "jumanji 1.1.1; terminates on collision (not reset)"
+ },
+ {
+  "impl": "jumanji",
+  "device": "gpu",
+  "batch": 256,
+  "steps_per_sec": 644341.4,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "jumanji 1.1.1; terminates on collision (not reset)"
+ },
+ {
+  "impl": "jumanji",
+  "device": "gpu",
+  "batch": 1024,
+  "steps_per_sec": 1561749.0,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "jumanji 1.1.1; terminates on collision (not reset)"
+ },
+ {
+  "impl": "jumanji",
+  "device": "gpu",
+  "batch": 4096,
+  "steps_per_sec": 2403849.2,
+  "task": "tiny-4ag",
+  "host": "pavilion",
+  "note": "jumanji 1.1.1; terminates on collision (not reset)"
  }
 ]

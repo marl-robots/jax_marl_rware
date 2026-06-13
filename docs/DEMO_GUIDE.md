@@ -45,8 +45,9 @@ table (a legal convoy move ends the episode for one agent ordering, not the
 other). Headline: under a random policy its median episode is **58 of 500
 steps** — early training optimizes survival, not logistics. Our env is
 validated **step-for-step** against the original (`tests/test_parity_env.py`)
-and still hits ~200k env steps/s on CPU (vs 2.7k for the original python env)
-— faithful AND fast. Full writeup: `docs/jumanji_mava_divergence.md`.
+and still hits **9.1M env steps/s on GPU** (batch 4096) — ~3.8× Jumanji's
+2.4M and ~3400× the original python env's 2.7k — faithful AND fast. Full
+writeup: `docs/jumanji_mava_divergence.md`.
 
 **Act 4 — the AI commentator (Story tab, 2 min).**
 🧠 *Story*: pick audience "general", hit **Narrate**. The LLM gets *only
