@@ -1,0 +1,10 @@
+=== [2026-06-12 19:16:08] START mappo_evo: --algo mappo --total-steps 50000000 --checkpoint-every 100 --run-dir runs/mappo_evo_tiny-4ag_seed2 --no-commentary
+=== [2026-06-12 22:33:18] DONE  mappo_evo (exit 0)
+=== [2026-06-12 22:33:18] START ippo: --algo ippo --total-steps 20000000 --checkpoint-every 100 --run-dir runs/ippo_tiny-4ag_seed2 --no-commentary
+=== [2026-06-13 00:01:55] DONE  ippo (exit 0)
+=== [2026-06-13 00:01:55] START ia2c: --algo ia2c --total-steps 20000000 --checkpoint-every 100 --run-dir runs/ia2c_tiny-4ag_seed2 --no-commentary
+=== [2026-06-14 00:22:33] DONE  ia2c (exit 0)
+=== [2026-06-14 00:22:33] START maa2c_ext: --algo maa2c --total-steps 20000000 --checkpoint-every 100 --run-dir runs/maa2c_tiny-4ag_seed2 --resume --no-commentary
+=== [2026-06-14 00:32:21] DONE  maa2c_ext (exit 0)
+=== [2026-06-14 00:32:21] QUEUE COMPLETE
+=== ia2c resume DONE exit 0 Sun Jun 14 01:04:03 IDT 2026
