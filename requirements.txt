@@ -1,0 +1,41 @@
+# jax_marl3 dependencies — Python 3.11 (developed/tested on 3.11.15).
+#
+# Recommended (conda):
+#   conda create -n jax_marl3 python=3.11 && conda activate jax_marl3
+#   pip install -r requirements.txt
+#
+# GPU (Linux/WSL, CUDA 12): the `jax[cuda12]` line below installs the CUDA
+# build of JAX. For CPU-only machines, replace it with:  jax==0.10.0
+# All versions are pinned to the environment the published results were
+# produced in (conda env `jax_env_1`).
+
+# --- core: JAX RWARE engine + AC-family / SEAC trainers ---
+jax[cuda12]==0.10.0
+flax==0.12.7
+optax==0.2.8
+chex==0.1.91
+distrax==0.1.8
+orbax-checkpoint==0.11.36
+numpy==2.4.4
+
+# --- rendering / replay capture ---
+pillow==12.2.0
+imageio==2.37.3
+imageio-ffmpeg==0.6.0
+
+# --- dashboard (arena/) — pandas/plotly/streamlit only; imports no JAX ---
+streamlit==1.58.0
+plotly==6.7.0
+pandas==3.0.2
+
+# --- tests & reference comparison (env/gradient parity, speed benchmark) ---
+pytest==9.0.3
+# torch is used ONLY by tests/test_*_parity.py; the CPU build is sufficient:
+#   pip install torch==2.12.0 --index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0
+gymnasium==1.3.0
+rware==2.0.0          # semitable/robotic-warehouse — parity tests + speed bench
+
+# Note: the Jumanji divergence reproduction (scripts/repro_jumanji_divergence.py)
+# needs `jumanji==1.1.1`, which pulls an OLDER jax and conflicts with the stack
+# above — run it in a SEPARATE environment (see docs/jumanji_mava_divergence.md).
