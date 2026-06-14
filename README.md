@@ -58,12 +58,25 @@ tests/           env parity + collision + MAPPO unit/gradient-parity tests
 
 ## Environment
 
-Runs in WSL, conda env `jax_env_1` (JAX+CUDA, flax, optax, chex, distrax, orbax):
+**Python 3.11** (developed/tested on 3.11.15). Pinned dependencies are in
+[`requirements.txt`](requirements.txt); the original results were produced in a
+WSL conda env with a CUDA-12 build of JAX.
 
 ```bash
-source ~/miniconda3/etc/profile.d/conda.sh && conda activate jax_env_1
-cd /mnt/c/Users/user1/projects/jax_marl3
+# fresh install (conda recommended)
+conda create -n jax_marl3 python=3.11 && conda activate jax_marl3
+pip install -r requirements.txt          # GPU (CUDA 12) by default; see file for CPU
+cd /path/to/jax_marl3
+
+# OR, just to VIEW the dashboard on a shared snapshot (no JAX/GPU needed):
+pip install -r requirements-dashboard.txt && streamlit run arena/app.py
 ```
+
+Key versions: `jax==0.10.0`, `flax==0.12.7`, `optax==0.2.8`, `chex==0.1.91`,
+`distrax==0.1.8`, `orbax-checkpoint==0.11.36`, `numpy==2.4.4`,
+`streamlit==1.58.0`. (The reproduction in
+[`docs/jumanji_mava_divergence.md`](docs/jumanji_mava_divergence.md) needs
+`jumanji==1.1.1` in a **separate** env — it pulls an older JAX.)
 
 ## Quickstart
 
