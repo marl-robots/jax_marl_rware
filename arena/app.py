@@ -336,7 +336,9 @@ with tab_story:
             f"**{b}** {s}" for b, s in status.items()))
 
     cached = cached_narration(runs, audience)
-    go_btn = st.button("📜 Narrate this selection", type="primary")
+    go_btn = st.button("📜 Re-narrate (try LLM)", type="primary",
+                       help="generate fresh with the selected backend; LLM "
+                            "backends are used when reachable, else template")
     force = st.checkbox("regenerate (ignore cache)", value=False)
 
     if go_btn:
@@ -349,9 +351,11 @@ with tab_story:
         st.markdown(text)
         st.caption(f"backend: {used}")
     else:
-        st.info("No narration cached for this selection yet — press "
-                "**Narrate** (the template backend always works; LLM "
-                "backends are used when available).")
+        # never leave the panel empty (and never hang on a slow LLM at load):
+        # show the instant deterministic narration; the button upgrades it.
+        text, used = narrate(runs, audience, backend="template")
+        st.markdown(text)
+        st.caption(f"backend: {used} — press **Re-narrate** for an LLM version")
 
 # ---------------------------------------------------------------- research --
 with tab_research:
@@ -440,18 +444,29 @@ with tab_research:
 with tab_detail:
     pick = st.selectbox("run", options=[r.name for r in runs])
     r = by_name[pick]
-    left, right = st.columns([1, 1])
-    with left:
-        st.subheader("Rollout")
-        _media(r)
-        n_replays = len(list_replays(r.path))
-        st.caption(f"{n_replays} replay snapshots · "
-                   f"{len(r.checkpoint_steps)} checkpoints on disk")
-    with right:
-        st.subheader("Summary")
+    st.subheader("Summary")
+    sc1, sc2 = st.columns([1, 1])
+    with sc1:
         st.json(summarize(r))
-        with st.expander("config.json"):
+    with sc2:
+        with st.expander("config.json", expanded=False):
             st.json(r.config)
+
+    st.subheader("Rollout")
+    detail_replays = list_replays(r.path)
+    if detail_replays:
+        # prefer the latest seed-0 episode; animate it with the canvas player
+        latest = [i for i in detail_replays if i.seed == 0 and not i.greedy] \
+            or detail_replays
+        snap = load_payload(latest[-1].path)
+        components.html(player_html([snap]), height=player_height([snap]) + 20)
+        st.caption(f"{len(detail_replays)} replay snapshots · "
+                   f"{len(r.checkpoint_steps)} checkpoints on disk")
+    else:
+        _media(r)
+        st.caption(f"no replays yet · {len(r.checkpoint_steps)} checkpoints "
+                   "— record with `python -m scripts.record_replay "
+                   f"--run-dir runs/{r.name}`")
     st.subheader("All metrics")
     gcols = st.columns(2)
     i = 0
