@@ -21,6 +21,7 @@ import sys
 # `import arena.*` would fail. Add the repo root explicitly.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -31,6 +32,7 @@ from arena.replay_data import list_replays, load_payload
 from arena.run_data import (
     METRIC_GROUPS,
     RunData,
+    algo_label,
     discover_runs,
     leaderboard,
     load_run,
@@ -115,6 +117,89 @@ def _curve_fig(runs: list[RunData], col: str, title: str,
     return _styled(fig, title)
 
 
+def _rgba(hex_color: str, alpha: float) -> str:
+    """'#rrggbb' -> 'rgba(r,g,b,alpha)' for translucent band fills."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _band_fig(pool: list[RunData], col: str, title: str, smooth: int,
+              show_seeds: bool = True, max_steps: float | None = None) -> go.Figure:
+    """Across-seed mean ± 1 std band per *config* (true seed-replicates only).
+
+    Runs are grouped by their seed-stripped name (e.g. ``mappo_tiny-4ag_seed0``
+    and ``…_seed2`` → one group), and only *canonical* configs are banded —
+    ``<algo>_<size>-<n>ag`` — so variant runs (``…_fc``, ``…_evo``, the SEAC
+    ``lam*/clip*`` hyperparameter probes) are NOT mixed into a band with
+    unrelated configs. Within a group, duplicate seeds keep the longer run.
+    Each seed's EMA-smoothed curve is interpolated onto a common steps grid
+    (0 .. the shared max), so a longer seed (e.g. mappo's 60M) is truncated to
+    the matched horizon. A config with one seed renders as a plain line.
+    """
+    import re
+    from collections import defaultdict
+    canon = re.compile(r"^(ia2c|ippo|maa2c|mappo|seac)_"
+                       r"(tiny|small|medium|large)-\d+ag$")
+    groups: dict[str, dict] = defaultdict(dict)   # stem -> {seed: run}
+    for r in pool:
+        if col not in r.df.columns or "environment_steps" not in r.df.columns \
+                or not len(r.df):
+            continue
+        stem = re.sub(r"_seed\d+$", "", r.name)
+        if not canon.match(stem):
+            continue
+        seed = r.config.get("seed", r.name)
+        prev = groups[stem].get(seed)
+        if prev is None or float(r.df["environment_steps"].max()) > \
+                float(prev.df["environment_steps"].max()):
+            groups[stem][seed] = r   # dedupe (stem,seed): keep the longer run
+
+    fig = go.Figure()
+    order_key = lambda s: (["ia2c", "ippo", "maa2c", "mappo", "seac"].index(
+        s.split("_")[0]) if s.split("_")[0] in
+        ("ia2c", "ippo", "maa2c", "mappo", "seac") else 9, s)
+    for stem in sorted(groups, key=order_key):
+        frs = list(groups[stem].values())
+        color = frs[0].color
+        fam_max = min(float(r.df["environment_steps"].max()) for r in frs)
+        if max_steps:
+            fam_max = min(fam_max, max_steps)
+        if fam_max <= 0:
+            continue
+        grid = np.linspace(0, fam_max, 200)
+        curves = []
+        for r in frs:
+            x = r.df["environment_steps"].to_numpy(dtype=float)
+            y = (r.df[col].ewm(span=smooth, min_periods=1).mean().to_numpy()
+                 if smooth > 1 else r.df[col].to_numpy(dtype=float))
+            order = np.argsort(x)
+            curves.append(np.interp(grid, x[order], y[order]))
+            if show_seeds and len(frs) > 1:
+                fig.add_trace(go.Scatter(
+                    x=grid, y=curves[-1], mode="lines", showlegend=False,
+                    line=dict(color=color, width=0.8), opacity=0.30,
+                    hoverinfo="skip"))
+        label = algo_label(frs[0].family)
+        M = np.vstack(curves)
+        mean, std, n = M.mean(0), M.std(0), len(curves)
+        if n > 1:  # shaded ±1 std band
+            fig.add_trace(go.Scatter(
+                x=np.concatenate([grid, grid[::-1]]),
+                y=np.concatenate([mean + std, (mean - std)[::-1]]),
+                fill="toself", fillcolor=_rgba(color, 0.16),
+                line=dict(color="rgba(0,0,0,0)"), showlegend=False,
+                hoverinfo="skip"))
+        fig.add_trace(go.Scatter(
+            x=grid, y=mean, mode="lines",
+            name=f"{label} (n={n})",
+            line=dict(color=color, width=2.4),
+            hovertemplate=f"{label}<br>%{{x:,.0f}} steps<br>"
+                          f"mean %{{y:.3f}}<extra></extra>"))
+    fig.update_layout(xaxis_title="environment steps")
+    return _styled(fig, title)
+
+
 def _media(run: RunData) -> None:
     if not run.media:
         st.caption("no rendered rollout yet — generate one with "
@@ -154,7 +239,33 @@ smooth = st.sidebar.slider(
     "smoothing (EMA span, updates)", min_value=1, max_value=500, value=100,
     help="curves are EMA-smoothed; the raw signal stays as a faint trace")
 show_raw = st.sidebar.checkbox("show raw traces", value=True)
-st.sidebar.caption(f"{len(all_runs)} runs discovered")
+
+# multi-seed support: how many seeds exist per family among the discovered runs
+_fam_seed_counts = {}
+for r in all_runs:
+    if r.family != "other":
+        _fam_seed_counts[r.family] = _fam_seed_counts.get(r.family, 0) + 1
+_has_multiseed = any(c > 1 for c in _fam_seed_counts.values())
+aggregate = st.sidebar.checkbox(
+    "aggregate seeds → mean±std bands", value=_has_multiseed,
+    help="group every seed of each selected algorithm into one mean curve "
+         "with a ±1 std confidence band (interpolated onto a shared step grid)")
+show_seeds = st.sidebar.checkbox(
+    "…also show individual seed lines", value=True, disabled=not aggregate)
+st.sidebar.caption(f"{len(all_runs)} runs discovered"
+                   + (f" · {max(_fam_seed_counts.values())} seeds max/algo"
+                      if _has_multiseed else ""))
+
+# when aggregating, pool ALL seeds of each selected family (not just the picks)
+_sel_families = {r.family for r in runs}
+agg_pool = [r for r in all_runs if r.family in _sel_families]
+
+
+def _series_fig(col: str, title: str):
+    """Band view when aggregating, else per-run lines — used everywhere."""
+    if aggregate:
+        return _band_fig(agg_pool, col, title, smooth, show_seeds)
+    return _curve_fig(runs, col, title, smooth, show_raw)
 
 # ---------------------------------------------------------------------------
 # main
@@ -239,19 +350,26 @@ with tab_overview:
         st.dataframe(show.sort_values("final ret", ascending=False),
                      use_container_width=True, hide_index=True)
 
+    if aggregate:
+        st.caption("📊 **aggregated**: each curve is the across-seed mean with a "
+                   "±1 std band — toggle off in the sidebar for per-run lines.")
     st.plotly_chart(
-        _curve_fig(runs, "mean_episode_returns", "The race — team return",
-                   smooth, show_raw), use_container_width=True)
+        _series_fig("mean_episode_returns", "The race — team return"),
+        use_container_width=True)
 
 # ----------------------------------------------------------------- compare --
 with tab_compare:
+    if aggregate:
+        st.caption("Showing across-seed **mean ± 1 std** per algorithm "
+                   f"(pool: {len(agg_pool)} runs). Uncheck *aggregate seeds* "
+                   "in the sidebar for individual runs.")
     cols_per_row = 2
     for group, metrics in METRIC_GROUPS.items():
         st.subheader(group)
         gcols = st.columns(min(cols_per_row, len(metrics)))
         for i, (col, label) in enumerate(metrics.items()):
             with gcols[i % len(gcols)]:
-                st.plotly_chart(_curve_fig(runs, col, label, smooth, show_raw),
+                st.plotly_chart(_series_fig(col, label),
                                 use_container_width=True)
 
 # ----------------------------------------------------------------- theater --
