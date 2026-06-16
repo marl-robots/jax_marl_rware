@@ -76,29 +76,44 @@ def main():
                     help="disable the per-chunk behavioral commentary (Layer 2)")
     args = ap.parse_args()
 
-    overrides = {}
-    if args.parallel_envs is not None:
-        overrides["parallel_envs"] = args.parallel_envs
-    if args.entropy_coef is not None:
-        overrides["entropy_coef"] = args.entropy_coef
-    if args.lr is not None:
-        overrides["lr"] = args.lr
-    if args.num_epochs is not None:
-        overrides["num_epochs"] = args.num_epochs
-    if args.no_rnn:
-        overrides["use_rnn"] = False
-    if args.total_steps is not None:
-        # convert legacy --total-steps to num_updates so parallel_envs doesn't
-        # silently shrink the update count
-        pe = args.parallel_envs if args.parallel_envs is not None else MAPPOConfig.parallel_envs
-        overrides["num_updates"] = args.total_steps // (MAPPOConfig.time_limit * pe)
+    # When resuming with a known run-dir, load the saved config as the base so
+    # the user doesn't have to re-specify every hyperparameter on the CLI.
+    # Explicit CLI flags still override the saved values.
+    saved = {}
+    if args.resume and args.run_dir:
+        try:
+            saved = CheckpointManager.load_config(args.run_dir)
+        except FileNotFoundError:
+            pass
 
-    cfg = MAPPOConfig.from_algo(
-        args.algo,
-        size=args.size, n_agents=args.n_agents, difficulty=args.difficulty,
-        seed=args.seed,
-        **overrides,
-    )
+    # Collect only the CLI flags the user explicitly passed
+    cli_overrides = {}
+    if args.parallel_envs is not None:
+        cli_overrides["parallel_envs"] = args.parallel_envs
+    if args.entropy_coef is not None:
+        cli_overrides["entropy_coef"] = args.entropy_coef
+    if args.lr is not None:
+        cli_overrides["lr"] = args.lr
+    if args.num_epochs is not None:
+        cli_overrides["num_epochs"] = args.num_epochs
+    if args.no_rnn:
+        cli_overrides["use_rnn"] = False
+    if args.total_steps is not None:
+        pe = cli_overrides.get("parallel_envs") or saved.get("parallel_envs") or MAPPOConfig.parallel_envs
+        cli_overrides["num_updates"] = args.total_steps // (MAPPOConfig.time_limit * pe)
+
+    if saved:
+        # saved config has all fields; merge with CLI overrides and construct directly
+        merged = {**saved, **cli_overrides}
+        merged.pop("algo", None)  # @property, not a dataclass field
+        cfg = MAPPOConfig(**merged)
+    else:
+        cfg = MAPPOConfig.from_algo(
+            args.algo,
+            size=args.size, n_agents=args.n_agents, difficulty=args.difficulty,
+            seed=args.seed,
+            **cli_overrides,
+        )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
 
     net_tag = "" if cfg.use_rnn else "_fc"
