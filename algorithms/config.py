@@ -62,7 +62,7 @@ class MAPPOConfig:
     orthogonal_gain: float = 2.0 ** 0.5  # gain on the FINAL Dense only
 
     # --- run ---
-    total_steps: int = 20_000_000
+    num_updates: int = 4_000   # gradient updates; fixed regardless of parallel_envs
     seed: int = 2
 
     @property
@@ -91,5 +91,6 @@ class MAPPOConfig:
         return self.time_limit * self.parallel_envs
 
     @property
-    def num_updates(self) -> int:
-        return self.total_steps // self.batch_steps
+    def total_steps(self) -> int:
+        """Total env steps across the run (derived; for logging only)."""
+        return self.num_updates * self.batch_steps

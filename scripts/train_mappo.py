@@ -87,13 +87,16 @@ def main():
         overrides["num_epochs"] = args.num_epochs
     if args.no_rnn:
         overrides["use_rnn"] = False
+    if args.total_steps is not None:
+        # convert legacy --total-steps to num_updates so parallel_envs doesn't
+        # silently shrink the update count
+        pe = args.parallel_envs if args.parallel_envs is not None else MAPPOConfig.parallel_envs
+        overrides["num_updates"] = args.total_steps // (MAPPOConfig.time_limit * pe)
 
     cfg = MAPPOConfig.from_algo(
         args.algo,
         size=args.size, n_agents=args.n_agents, difficulty=args.difficulty,
         seed=args.seed,
-        total_steps=args.total_steps if args.total_steps is not None
-        else MAPPOConfig.total_steps,
         **overrides,
     )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
