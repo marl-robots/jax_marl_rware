@@ -97,6 +97,12 @@ class DQNConfig:
                                      # (bootstrapped sampling -> ensemble diversity;
                                      # 1.0 == shared batch / no bootstrapping)
 
+    # --- recurrent training ---
+    bptt_window: int = 0             # truncated BPTT window for the recurrent net:
+                                     # gradients are cut (stop_gradient on hidden)
+                                     # every N steps; hidden still flows forward the
+                                     # whole episode. 0 == full-episode BPTT.
+
     # --- run ---
     t_max: int = 10_000_000          # total env steps (RWARE benchmark budget)
     seed: int = 2

@@ -38,6 +38,13 @@ def main():
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--ensemble-size", type=int, default=5)
     ap.add_argument("--ucb-beta", type=float, default=1.0)
+    ap.add_argument("--use-rnn", action="store_true",
+                    help="recurrent (GRU) ensemble matching epymarl IDQN; rollout "
+                         "carries per-member hidden state.")
+    ap.add_argument("--bptt-window", type=int, default=0,
+                    help="truncated-BPTT window for --use-rnn (0 = full episode). "
+                         "Cuts gradients every N steps to bound BPTT memory while "
+                         "keeping full batch; hidden still flows forward.")
     ap.add_argument("--updates-per-iter", type=int, default=None,
                     help="EMAX grad steps per iter (default = parallel_envs)")
     ap.add_argument("--run-dir", default=None)
@@ -53,12 +60,13 @@ def main():
         parallel_envs=args.parallel_envs, time_limit=args.time_limit,
         buffer_size=args.buffer_size, batch_size=args.batch_size,
         ensemble_size=args.ensemble_size, ucb_beta=args.ucb_beta,
-        use_rnn=False,  # feedforward for now (recurrent UCB rollout is a TODO)
+        use_rnn=args.use_rnn, bptt_window=args.bptt_window,
     )
     iters = args.iters
     chunk = max(1, args.checkpoint_every)
+    net_tag = "_rnn" if cfg.use_rnn else "_fc"
     run_dir = args.run_dir or os.path.join(
-        "runs", f"emax_{cfg.size}-{cfg.n_agents}ag_K{cfg.ensemble_size}_seed{cfg.seed}")
+        "runs", f"emax{net_tag}_{cfg.size}-{cfg.n_agents}ag_K{cfg.ensemble_size}_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
 
     print(f"backend={jax.default_backend()}  devices={jax.devices()}")

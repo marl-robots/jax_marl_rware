@@ -278,6 +278,42 @@ def _ensemble_q(qnet, params_ens, obs_T, B, H):
     return jax.vmap(one)(params_ens)
 
 
+def _ensemble_q_windowed(qnet, params_ens, obs_T, B, H, window):
+    """Recurrent ensemble forward with TRUNCATED BPTT.
+
+    The GRU hidden state still flows forward across the WHOLE episode, but the
+    gradient is cut every `window` steps (stop_gradient on the carried hidden at
+    each window boundary). Forward outputs are byte-identical to the full
+    forward -- only the backward pass is truncated.
+
+    Memory: stop_gradient alone does NOT lower peak memory, because every
+    window's Q feeds one loss so XLA must keep all windows' activations for the
+    backward pass. So each window's forward is wrapped in jax.checkpoint
+    (rematerialisation): its activations are recomputed during backprop instead
+    of stored, bounding peak BPTT memory to a single window (~window/T of the
+    full unroll) at the cost of ~one extra forward. That is what actually lets
+    the recurrent net fit a small GPU at full batch. The window loop is unrolled
+    at trace time (T, window are static)."""
+    T = obs_T.shape[0]
+
+    @jax.checkpoint  # recompute this window's activations in backward, don't store
+    def win_apply(p, h, obs_win):
+        return qnet.apply(p, h, (obs_win, jnp.zeros((obs_win.shape[0], B))))
+
+    def one(p):
+        h = ScannedGRU.initialize_carry(B, H)
+        qs = []
+        start = 0
+        while start < T:
+            L = min(window, T - start)
+            h, q_win = win_apply(p, h, obs_T[start:start + L])
+            h = jax.lax.stop_gradient(h)        # cut BPTT at the window boundary
+            qs.append(q_win)
+            start += L
+        return jnp.concatenate(qs, axis=0)       # [T, B, A]
+    return jax.vmap(one)(params_ens)
+
+
 def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     """One EMAX gradient step: each member regresses to the shared, detached
     ensemble-mean TD(0) target. Returns (params_ens, opt_state, rew_ms, diag).
@@ -301,8 +337,17 @@ def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     if bmask is None:
         bmask = jnp.ones((K, E))
 
-    def q_all(p_ens):
-        q = _ensemble_q(qnet, p_ens, obs_T, B, H)          # [K, T, B, A]
+    # truncated BPTT only matters for the recurrent net on the differentiated
+    # (loss) path; the target forward is detached, so it never stores backward
+    # activations and can stay full-length.
+    window = getattr(cfg, "bptt_window", 0)
+    use_window = bool(cfg.use_rnn and window and 0 < window < T)
+
+    def q_all(p_ens, windowed=False):
+        if windowed and use_window:
+            q = _ensemble_q_windowed(qnet, p_ens, obs_T, B, H, window)
+        else:
+            q = _ensemble_q(qnet, p_ens, obs_T, B, H)      # [K, T, B, A]
         return q.reshape(K, T, E, N, A)
 
     # ---- ensemble-mean target (detached; no target net, no double-Q) ----
@@ -327,7 +372,7 @@ def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     mask_EN = jnp.broadcast_to(mask[..., None], (T - 1, E, N))
 
     def loss_fn(p_ens):
-        mac = q_all(p_ens)                                  # [K, T, E, N, A]
+        mac = q_all(p_ens, windowed=True)                   # [K, T, E, N, A]
         idx = jnp.broadcast_to(actions_T[: T - 1], (K, T - 1, E, N))
         chosen = jnp.take_along_axis(
             mac[:, : T - 1], idx[..., None], axis=-1)[..., 0]   # [K, T-1, E, N]

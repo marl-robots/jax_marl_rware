@@ -440,3 +440,98 @@ def test_emax_bootstrap_mask_matches_pytorch():
                                fc.weight.detach().numpy().T, atol=1e-6), (dense, k)
             assert np.allclose(np.array(p2[dense]["bias"][k]),
                                fc.bias.detach().numpy(), atol=1e-6), (dense, k)
+
+
+def _torch_emax_recurrent_update(members, obs_TB, actions_TEN, reward_TE,
+                                 terminated_TE, filled_TE, cfg, E, N, bmask):
+    """EMAX update with RECURRENT (GRUCell) members, transcribed in torch
+    (full-episode BPTT -- matches emax_update with bptt_window=0)."""
+    K = len(members)
+    A = members[0].fc2.out_features
+    T = obs_TB.shape[0]
+    params = [p for m in members for p in m.parameters()]
+    opt = torch.optim.Adam(params, lr=cfg.lr, eps=cfg.adam_eps)
+
+    def all_q():
+        return torch.stack(
+            [m.forward_seq(obs_TB).reshape(T, E, N, A) for m in members], 0)
+
+    with torch.no_grad():
+        q_mean = all_q().mean(0)
+        target_max = q_mean[1:].max(dim=-1)[0]
+        r = reward_TE[: T - 1].clone()
+        if cfg.standardise_rewards:
+            rms = TorchRunningMeanStd((1,))
+            rms.update(r.reshape(-1, 1))
+            r = (r - rms.mean[0]) / torch.sqrt(rms.var[0])
+        targets = r.unsqueeze(-1).expand(-1, -1, N) + cfg.gamma * (
+            1 - terminated_TE[: T - 1]).unsqueeze(-1) * target_max
+
+    mask = filled_TE[: T - 1].clone()
+    mask[1:] = mask[1:] * (1 - terminated_TE[: T - 2])
+    mask_EN = mask.unsqueeze(-1).expand(-1, -1, N)
+    mac = all_q()
+    idx = actions_TEN[: T - 1].unsqueeze(0).expand(K, -1, -1, -1).unsqueeze(-1)
+    chosen = torch.gather(mac[:, : T - 1], -1, idx).squeeze(-1)
+    td = chosen - targets.unsqueeze(0)
+    w = mask_EN.unsqueeze(0) * bmask[:, None, :, None]
+    loss = ((td ** 2) * w).sum() / w.sum()
+
+    opt.zero_grad()
+    loss.backward()
+    for m in members:
+        m.zero_pinned_grads()
+    torch.nn.utils.clip_grad_norm_(params, cfg.grad_norm_clip)
+    opt.step()
+    for m in members:
+        m._pin()
+    return {"loss": float(loss.detach())}
+
+
+def test_emax_recurrent_update_matches_pytorch():
+    """EMAX update with the RECURRENT net (epymarl-faithful IDQN), full BPTT:
+    JAX vs an independent torch transcription, with a bootstrap mask. Per-member
+    params checked by indexing the ensemble axis through the IQL checker."""
+    torch.manual_seed(0)
+    rng = np.random.default_rng(4)
+    T, E, N, in_dim, A, H, K = 8, 3, 2, 10, 5, 4, 3
+    B = E * N
+    cfg = dataclasses.replace(
+        DQNConfig.from_algo("iql-emax"),
+        hidden_dim=H, use_rnn=True, standardise_rewards=True,
+        gamma=0.99, lr=3e-4, grad_norm_clip=10.0, ensemble_size=K)  # bptt_window=0
+    members = [TorchRNNAgent(in_dim, H, A).double() for _ in range(K)]
+
+    obs = rng.standard_normal((T, B, in_dim))
+    actions = rng.integers(0, A, size=(T, E, N))
+    reward = rng.standard_normal((T, E))
+    terminated = np.zeros((T, E))
+    filled = np.ones((T, E))
+    terminated[T - 3, 0] = 1.0
+    filled[T - 2:, 0] = 0.0
+    bmask = rng.integers(0, 2, size=(K, E)).astype(np.float64)
+    bmask[:, 0] = 1.0
+
+    qnet = QNetwork(num_actions=A, hidden_dim=H, use_rnn=True)
+    stacked = jax.tree_util.tree_map(
+        lambda *xs: jnp.stack(xs), *[_to_flax(m, H) for m in members])
+    params_ens = freeze({"params": stacked})
+    tx = make_optimizer(cfg)
+    opt_state = tx.init(params_ens)
+    batch = {
+        "obs_T": jnp.asarray(obs), "actions_T": jnp.asarray(actions),
+        "reward_T": jnp.asarray(reward), "terminated_T": jnp.asarray(terminated),
+        "filled_T": jnp.asarray(filled), "bootstrap_mask": jnp.asarray(bmask),
+    }
+    p2, _, _, diag = emax_update(qnet, tx, cfg, params_ens, opt_state,
+                                 rms_init((1,)), batch)
+    ref = _torch_emax_recurrent_update(
+        members, torch.tensor(obs), torch.tensor(actions), torch.tensor(reward),
+        torch.tensor(terminated), torch.tensor(filled), cfg, E, N,
+        bmask=torch.tensor(bmask))
+
+    assert np.allclose(float(diag["loss"]), ref["loss"], atol=1e-6), \
+        (float(diag["loss"]), ref["loss"])
+    for k, m in enumerate(members):
+        pk = jax.tree_util.tree_map(lambda x: x[k], p2)
+        _assert_params_match(pk, m, H, atol=1e-6)

@@ -32,7 +32,7 @@ import jax.numpy as jnp
 from jaxrware import Warehouse, make_config
 from .dqn_networks import QNetwork
 from .dqn import (
-    _augment_obs, _ensemble_q, epsilon_at, emax_update, feed_batch,
+    _augment_obs, epsilon_at, emax_update, feed_batch,
     init_ensemble, make_optimizer, rms_init,
 )
 
@@ -84,10 +84,18 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
         obs = _augment_obs(obs, N, cfg.obs_agent_id)
 
         def step(carry, _):
-            states, obs, key = carry
+            states, obs, h_ens, key = carry
             key, ka, kr = jax.random.split(key, 3)
             obs_flat = obs.reshape(B, in_dim)
-            q = _ensemble_q(qnet, params_ens, obs_flat[None], B, H)[:, 0]  # [K,B,A]
+
+            # per-member single step carrying each member's GRU hidden state
+            # (mirrors mappo.py rollout_step; for use_rnn=False the QNetwork
+            # returns `hidden` unchanged, so this is correct for both nets).
+            def one(p, h):
+                h2, q = qnet.apply(p, h, (obs_flat[None], jnp.zeros((1, B))))
+                return h2, q[0]                                 # q[0]: [B, A]
+            h_ens, q = jax.vmap(one)(params_ens, h_ens)         # [K,B,H], [K,B,A]
+
             ucb = q.mean(axis=0) + cfg.ucb_beta * q.std(axis=0)
             greedy = jnp.argmax(ucb, axis=-1)
             rand_a = jax.random.randint(ka, (B,), 0, A)
@@ -95,11 +103,12 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
                                 rand_a, greedy).reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             nobs = _augment_obs(nobs, N, cfg.obs_agent_id)
-            return (nstates, nobs, key), (obs_flat, actions, rewards.sum(-1),
-                                          info["deliveries"], rewards)
+            return (nstates, nobs, h_ens, key), (obs_flat, actions, rewards.sum(-1),
+                                                 info["deliveries"], rewards)
 
-        (_, final_obs, _), (obs_t, act_t, rew_t, deliv_t, raw_r_t) = jax.lax.scan(
-            step, (states, obs, key), None, length=T)
+        h0 = jnp.zeros((K, B, H))  # hidden starts at zeros each episode
+        (_, final_obs, _, _), (obs_t, act_t, rew_t, deliv_t, raw_r_t) = jax.lax.scan(
+            step, (states, obs, h0, key), None, length=T)
         obs_seq = jnp.concatenate([obs_t, final_obs.reshape(1, B, in_dim)], axis=0)
         obs_b = obs_seq.reshape(T + 1, E, N, in_dim).transpose(1, 0, 2, 3)
         metrics = {"episode_return": raw_r_t.sum(0).sum(-1).mean(),
