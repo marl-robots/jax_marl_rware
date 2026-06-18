@@ -93,6 +93,9 @@ class DQNConfig:
     use_emax: bool = False
     ensemble_size: int = 1           # K value functions per agent; paper uses 5
     ucb_beta: float = 1.0            # exploration weight in argmax[Q_mean + beta*Q_std]
+    bootstrap_mask_prob: float = 0.5  # per-member Bernoulli mask over the minibatch
+                                     # (bootstrapped sampling -> ensemble diversity;
+                                     # 1.0 == shared batch / no bootstrapping)
 
     # --- run ---
     t_max: int = 10_000_000          # total env steps (RWARE benchmark budget)

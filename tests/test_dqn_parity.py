@@ -291,9 +291,11 @@ def _mlp_to_flax(mlp):
 
 
 def _torch_emax_update(members, obs_TB, actions_TEN, reward_TE, terminated_TE,
-                       filled_TE, cfg, E, N):
+                       filled_TE, cfg, E, N, bmask=None):
     A = members[0].fc2.out_features
     K = len(members)
+    if bmask is None:
+        bmask = torch.ones(K, E, dtype=torch.float64)
     T = obs_TB.shape[0]
     params = [p for m in members for p in m.parameters()]
     opt = torch.optim.Adam(params, lr=cfg.lr, eps=cfg.adam_eps)
@@ -321,7 +323,8 @@ def _torch_emax_update(members, obs_TB, actions_TEN, reward_TE, terminated_TE,
     idx = actions_TEN[: T - 1].unsqueeze(0).expand(K, -1, -1, -1).unsqueeze(-1)
     chosen = torch.gather(mac[:, : T - 1], -1, idx).squeeze(-1)   # [K,T-1,E,N]
     td = chosen - targets.unsqueeze(0)
-    loss = ((td * mask_EN.unsqueeze(0)) ** 2).sum() / (mask_EN.sum() * K)
+    w = mask_EN.unsqueeze(0) * bmask[:, None, :, None]            # [K,T-1,E,N]
+    loss = ((td ** 2) * w).sum() / w.sum()
 
     opt.zero_grad()
     loss.backward()
@@ -376,6 +379,60 @@ def test_emax_update_matches_pytorch():
         (float(diag["loss"]), ref["loss"])
 
     # post-update params agree for every ensemble member
+    p2 = p2["params"]
+    for k, m in enumerate(members):
+        for dense, fc in (("Dense_0", m.fc0), ("Dense_1", m.fc1), ("Dense_2", m.fc2)):
+            assert np.allclose(np.array(p2[dense]["kernel"][k]),
+                               fc.weight.detach().numpy().T, atol=1e-6), (dense, k)
+            assert np.allclose(np.array(p2[dense]["bias"][k]),
+                               fc.bias.detach().numpy(), atol=1e-6), (dense, k)
+
+
+def test_emax_bootstrap_mask_matches_pytorch():
+    """EMAX update with a per-member bootstrap mask: JAX vs torch transcription."""
+    torch.manual_seed(0)
+    rng = np.random.default_rng(2)
+    T, E, N, in_dim, A, H, K = 8, 4, 2, 10, 5, 4, 5
+    B = E * N
+    cfg = dataclasses.replace(
+        DQNConfig.from_algo("iql-emax"),
+        hidden_dim=H, use_rnn=False, standardise_rewards=True,
+        gamma=0.99, lr=3e-4, grad_norm_clip=10.0, ensemble_size=K,
+    )
+    members = [TorchMLP(in_dim, H, A).double() for _ in range(K)]
+
+    obs = rng.standard_normal((T, B, in_dim))
+    actions = rng.integers(0, A, size=(T, E, N))
+    reward = rng.standard_normal((T, E))
+    terminated = np.zeros((T, E))
+    filled = np.ones((T, E))
+    terminated[T - 3, 0] = 1.0
+    filled[T - 2:, 0] = 0.0
+    # non-trivial bootstrap mask (and not all-ones for any member)
+    bmask = rng.integers(0, 2, size=(K, E)).astype(np.float64)
+    bmask[:, 0] = 1.0  # guarantee a nonzero denominator
+
+    qnet = QNetwork(num_actions=A, hidden_dim=H, use_rnn=False)
+    stacked = jax.tree_util.tree_map(
+        lambda *xs: jnp.stack(xs), *[_mlp_to_flax(m) for m in members])
+    params_ens = freeze({"params": stacked})
+    tx = make_optimizer(cfg)
+    opt_state = tx.init(params_ens)
+    batch = {
+        "obs_T": jnp.asarray(obs), "actions_T": jnp.asarray(actions),
+        "reward_T": jnp.asarray(reward), "terminated_T": jnp.asarray(terminated),
+        "filled_T": jnp.asarray(filled),
+        "bootstrap_mask": jnp.asarray(bmask),
+    }
+    p2, _, _, diag = emax_update(qnet, tx, cfg, params_ens, opt_state,
+                                 rms_init((1,)), batch)
+    ref = _torch_emax_update(
+        members, torch.tensor(obs), torch.tensor(actions), torch.tensor(reward),
+        torch.tensor(terminated), torch.tensor(filled), cfg, E, N,
+        bmask=torch.tensor(bmask))
+
+    assert np.allclose(float(diag["loss"]), ref["loss"], atol=1e-6), \
+        (float(diag["loss"]), ref["loss"])
     p2 = p2["params"]
     for k, m in enumerate(members):
         for dense, fc in (("Dense_0", m.fc0), ("Dense_1", m.fc1), ("Dense_2", m.fc2)):

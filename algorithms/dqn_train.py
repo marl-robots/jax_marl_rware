@@ -127,9 +127,13 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
 
             def grad_step(c, _):
                 params_ens, opt_state, rew_ms, key = c
-                key, ks = jax.random.split(key)
+                key, ks, kb = jax.random.split(key, 3)
                 idxs = jax.random.randint(ks, (bs,), 0, count)  # sample warm portion
                 batch = feed_batch(buf_obs[idxs], buf_act[idxs], buf_rew[idxs], T, N)
+                # per-member bootstrap mask over the bs sampled episodes
+                batch["bootstrap_mask"] = (
+                    jax.random.uniform(kb, (K, bs)) < cfg.bootstrap_mask_prob
+                ).astype(jnp.float32)
                 params_ens, opt_state, rew_ms, diag = emax_update(
                     qnet, tx, cfg, params_ens, opt_state, rew_ms, batch)
                 return (params_ens, opt_state, rew_ms, key), diag["loss"]

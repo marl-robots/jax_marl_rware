@@ -280,7 +280,13 @@ def _ensemble_q(qnet, params_ens, obs_T, B, H):
 
 def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     """One EMAX gradient step: each member regresses to the shared, detached
-    ensemble-mean TD(0) target. Returns (params_ens, opt_state, rew_ms, diag)."""
+    ensemble-mean TD(0) target. Returns (params_ens, opt_state, rew_ms, diag).
+
+    `batch["bootstrap_mask"]` (optional, shape [K, E]) is a per-member 0/1 weight
+    over the minibatch episodes: member k's loss only counts episodes with
+    mask=1, so each member trains on its own bootstrap resample (paper diversity
+    technique). Absent -> all-ones, i.e. the shared-minibatch behaviour.
+    """
     obs_T = batch["obs_T"]
     actions_T = batch["actions_T"]
     reward_T = batch["reward_T"]
@@ -291,6 +297,9 @@ def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     H = cfg.hidden_dim
     K = cfg.ensemble_size
     A = qnet.num_actions
+    bmask = batch.get("bootstrap_mask")
+    if bmask is None:
+        bmask = jnp.ones((K, E))
 
     def q_all(p_ens):
         q = _ensemble_q(qnet, p_ens, obs_T, B, H)          # [K, T, B, A]
@@ -323,8 +332,9 @@ def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
         chosen = jnp.take_along_axis(
             mac[:, : T - 1], idx[..., None], axis=-1)[..., 0]   # [K, T-1, E, N]
         td = chosen - targets[None]                         # broadcast over K
-        masked = td * mask_EN[None]
-        return (masked ** 2).sum() / (mask_EN.sum() * K)    # mean over members too
+        # weight = step-validity mask * per-member bootstrap mask [K, T-1, E, N]
+        w = mask_EN[None] * bmask[:, None, :, None]
+        return ((td ** 2) * w).sum() / w.sum()              # masked mean over K,T,E,N
 
     loss, grads = jax.value_and_grad(loss_fn)(params_ens)
     updates, opt_state = tx.update(grads, opt_state, params_ens)
