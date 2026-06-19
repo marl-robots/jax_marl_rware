@@ -20,8 +20,10 @@ Faithful to uoe-agents/epymarl src/learners/q_learner.py:QLearner.train:
 Arrays are time-major (axis 0 = time T, the episode length+1 of stored steps).
 Agents are folded into the batch axis B = E*N (E = episodes in the minibatch,
 N = agents) so the shared QNetwork needs no per-agent stacking. avail_actions
-are assumed all-ones (true for RWARE), so the -inf availability masking in
-epymarl is a no-op and omitted; it can be reintroduced for masked envs.
+default to all-ones (true for unmasked RWARE), so the -inf availability masking
+in epymarl is a no-op. When the env supplies an action mask (cfg.use_action_mask,
+Warehouse.action_masks), `emax_update` applies it to the bootstrap-max target
+via batch["action_mask"]; the parity path passes no mask and is unchanged.
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ import optax
 from jaxrware import Warehouse, make_config
 from .dqn_networks import QNetwork
 from .networks import ScannedGRU
+
+_NEG_INF = -1e8  # fill for masked-out action Q-values (matches marlbase -1e8)
 
 
 # ----------------------------------------------------------------------------
@@ -353,7 +357,14 @@ def emax_update(qnet, tx, cfg, params_ens, opt_state, rew_ms, batch):
     # ---- ensemble-mean target (detached; no target net, no double-Q) ----
     mac_ens = q_all(params_ens)
     q_mean = mac_ens.mean(axis=0)                           # [T, E, N, A]
-    target_max = q_mean[1:].max(axis=-1)                    # [T-1, E, N]
+    q_next = q_mean[1:]                                     # [T-1, E, N, A]
+    amask = batch.get("action_mask")                        # [T, E, N, A] or None
+    if amask is not None:
+        # mask provably-no-op actions out of the bootstrap max, identically to
+        # the rollout's greedy/eps selection (Warehouse.action_masks), so the
+        # target and the behaviour policy stay consistent.
+        q_next = jnp.where(amask[1:] > 0, q_next, _NEG_INF)
+    target_max = q_next.max(axis=-1)                        # [T-1, E, N]
 
     r = reward_T[: T - 1]
     if cfg.standardise_rewards:
@@ -440,9 +451,11 @@ def make_emax_trainer(cfg):
                 init_state=init_state, collect=collect, update=update)
 
 
-def feed_batch(obs_b, act_b, rew_b, T, N):
+def feed_batch(obs_b, act_b, rew_b, T, N, mask_b=None):
     """Convert sampled episodes (batch-major) to the time-major arrays
-    iql_update expects, with all tensors length T+1 (last row dummy/0)."""
+    iql_update/emax_update expect, with all tensors length T+1 (last row
+    dummy/0). `mask_b` (optional, [bs, T+1, N, A]) adds the time-major action
+    mask consumed by emax_update; absent -> no masking (unchanged behaviour)."""
     bs = obs_b.shape[0]
     obs_T = obs_b.transpose(1, 0, 2, 3).reshape(T + 1, bs * N, -1)   # [T+1, bs*N, in]
     pad = lambda x, last: jnp.concatenate([x, jnp.full((1,) + x.shape[1:], last,
@@ -451,5 +464,8 @@ def feed_batch(obs_b, act_b, rew_b, T, N):
     rew_T = pad(rew_b.transpose(1, 0), 0.0)                          # [T+1, bs]
     terminated_T = jnp.zeros((T + 1, bs))
     filled_T = pad(jnp.ones((T, bs)), 0.0)
-    return {"obs_T": obs_T, "actions_T": act_T, "reward_T": rew_T,
-            "terminated_T": terminated_T, "filled_T": filled_T}
+    out = {"obs_T": obs_T, "actions_T": act_T, "reward_T": rew_T,
+           "terminated_T": terminated_T, "filled_T": filled_T}
+    if mask_b is not None:
+        out["action_mask"] = mask_b.transpose(1, 0, 2, 3)           # [T+1, bs, N, A]
+    return out

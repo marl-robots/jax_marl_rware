@@ -20,6 +20,13 @@ EMAX has no target network, so the carry is just trainable state + buffer.
 the host loop only runs between chunks to checkpoint (orbax) + log CSV -- the
 exact division of labour mappo.py uses. Checkpoints save only the small
 trainable subtree (not the big replay buffer); on resume the buffer re-warms.
+
+Optional action masking (cfg.use_action_mask): when on, the env emits a
+[N, A] mask of provably-no-op actions (Warehouse.action_masks) that is applied
+identically to the UCB greedy action, the epsilon-random action, and the
+bootstrap-max target (emax_update). The mask is stored alongside obs in the
+ring buffer so the target sees the same mask the behaviour did. When off, the
+mask buffer is a zero-size placeholder and every numerical path is unchanged.
 """
 
 from __future__ import annotations
@@ -36,6 +43,8 @@ from .dqn import (
     init_ensemble, make_optimizer, rms_init,
 )
 
+_NEG = -1e8  # masked-action fill for argmax / categorical sampling
+
 
 def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
     env = Warehouse(make_config(cfg.size, cfg.n_agents, cfg.difficulty))
@@ -49,6 +58,7 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
     n_grad = E if updates_per_iter is None else updates_per_iter  # grad steps/iter
     qnet = QNetwork(num_actions=A, hidden_dim=H, use_rnn=cfg.use_rnn)
     tx = make_optimizer(cfg)
+    mask_on = bool(cfg.use_action_mask)
 
     # -- trainable subtree <-> full carry (buffer excluded from checkpoints) ----
     def init_carry(key):
@@ -59,23 +69,25 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
         buf_obs = jnp.zeros((C, T + 1, N, in_dim), jnp.float32)
         buf_act = jnp.zeros((C, T, N), jnp.int32)
         buf_rew = jnp.zeros((C, T), jnp.float32)
+        # zero-size placeholder when masking is off -> ~no memory, constant carry
+        buf_mask = jnp.zeros((C, T + 1, N, A) if mask_on else (0,), jnp.float32)
         ptr = jnp.array(0, jnp.int32)
         count = jnp.array(0, jnp.int32)
         return (params_ens, opt_state, rew_ms, buf_obs, buf_act, buf_rew,
-                ptr, count, key)
+                buf_mask, ptr, count, key)
 
     def save_subtree(carry):
-        params_ens, opt_state, rew_ms, _, _, _, ptr, count, key = carry
+        params_ens, opt_state, rew_ms, _, _, _, _, ptr, count, key = carry
         return (params_ens, opt_state, rew_ms, ptr, count, key)
 
     def merge_subtree(full_carry, saved):
         params_ens, opt_state, rew_ms, ptr, count, key = saved
-        _, _, _, buf_obs, buf_act, buf_rew, _, _, _ = full_carry
+        _, _, _, buf_obs, buf_act, buf_rew, buf_mask, _, _, _ = full_carry
         # buffer re-warms from empty on resume
         return (params_ens, opt_state, rew_ms,
                 jnp.zeros_like(buf_obs), jnp.zeros_like(buf_act),
-                jnp.zeros_like(buf_rew), jnp.array(0, jnp.int32),
-                jnp.array(0, jnp.int32), key)
+                jnp.zeros_like(buf_rew), jnp.zeros_like(buf_mask),
+                jnp.array(0, jnp.int32), jnp.array(0, jnp.int32), key)
 
     # -- in-graph rollout: E episodes of UCB(+eps) actions --------------------
     def rollout(params_ens, key, epsilon):
@@ -96,38 +108,60 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
                 return h2, q[0]                                 # q[0]: [B, A]
             h_ens, q = jax.vmap(one)(params_ens, h_ens)         # [K,B,H], [K,B,A]
 
-            ucb = q.mean(axis=0) + cfg.ucb_beta * q.std(axis=0)
-            greedy = jnp.argmax(ucb, axis=-1)
-            rand_a = jax.random.randint(ka, (B,), 0, A)
+            ucb = q.mean(axis=0) + cfg.ucb_beta * q.std(axis=0)  # [B, A]
+            if mask_on:
+                amask = jax.vmap(env.action_masks)(states).reshape(B, A)  # [B,A]
+                greedy = jnp.argmax(jnp.where(amask > 0, ucb, _NEG), axis=-1)
+                # epsilon-random restricted to valid actions (uniform over them)
+                rand_a = jax.random.categorical(ka, jnp.where(amask > 0, 0.0, _NEG))
+            else:
+                greedy = jnp.argmax(ucb, axis=-1)
+                rand_a = jax.random.randint(ka, (B,), 0, A)
             actions = jnp.where(jax.random.uniform(kr, (B,)) < epsilon,
                                 rand_a, greedy).reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             nobs = _augment_obs(nobs, N, cfg.obs_agent_id)
-            return (nstates, nobs, h_ens, key), (obs_flat, actions, rewards.sum(-1),
-                                                 info["deliveries"], rewards)
+            out = (obs_flat, actions, rewards.sum(-1), info["deliveries"], rewards)
+            if mask_on:
+                out = out + (amask.reshape(E, N, A),)
+            return (nstates, nobs, h_ens, key), out
 
         h0 = jnp.zeros((K, B, H))  # hidden starts at zeros each episode
-        (_, final_obs, _, _), (obs_t, act_t, rew_t, deliv_t, raw_r_t) = jax.lax.scan(
+        (fstates, final_obs, _, _), scanned = jax.lax.scan(
             step, (states, obs, h0, key), None, length=T)
+        if mask_on:
+            obs_t, act_t, rew_t, deliv_t, raw_r_t, mask_t = scanned
+        else:
+            obs_t, act_t, rew_t, deliv_t, raw_r_t = scanned
+
         obs_seq = jnp.concatenate([obs_t, final_obs.reshape(1, B, in_dim)], axis=0)
         obs_b = obs_seq.reshape(T + 1, E, N, in_dim).transpose(1, 0, 2, 3)
         metrics = {"episode_return": raw_r_t.sum(0).sum(-1).mean(),
                    "deliveries": deliv_t.sum(0).sum(-1).mean()}
-        return obs_b, act_t.transpose(1, 0, 2), rew_t.transpose(1, 0), metrics
+
+        if mask_on:
+            final_mask = jax.vmap(env.action_masks)(fstates)        # [E, N, A]
+            mask_seq = jnp.concatenate([mask_t, final_mask[None]], axis=0)
+            mask_b = mask_seq.transpose(1, 0, 2, 3)                  # [E, T+1, N, A]
+        else:
+            mask_b = None
+        return obs_b, act_t.transpose(1, 0, 2), rew_t.transpose(1, 0), mask_b, metrics
 
     # -- one collection iteration ---------------------------------------------
     def update_step(carry, idx):
         (params_ens, opt_state, rew_ms, buf_obs, buf_act, buf_rew,
-         ptr, count, key) = carry
+         buf_mask, ptr, count, key) = carry
         key, kroll = jax.random.split(key)
         eps = epsilon_at(cfg, idx * E * T)
-        obs_b, act_b, rew_b, metrics = rollout(params_ens, kroll, eps)
+        obs_b, act_b, rew_b, mask_b, metrics = rollout(params_ens, kroll, eps)
 
         # scatter E episodes into the ring buffer
         pos = (ptr + jnp.arange(E)) % C
         buf_obs = buf_obs.at[pos].set(obs_b)
         buf_act = buf_act.at[pos].set(act_b)
         buf_rew = buf_rew.at[pos].set(rew_b)
+        if mask_on:
+            buf_mask = buf_mask.at[pos].set(mask_b)
         ptr = (ptr + E) % C
         count = jnp.minimum(count + E, C)
 
@@ -138,7 +172,9 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
                 params_ens, opt_state, rew_ms, key = c
                 key, ks, kb = jax.random.split(key, 3)
                 idxs = jax.random.randint(ks, (bs,), 0, count)  # sample warm portion
-                batch = feed_batch(buf_obs[idxs], buf_act[idxs], buf_rew[idxs], T, N)
+                mb = buf_mask[idxs] if mask_on else None
+                batch = feed_batch(buf_obs[idxs], buf_act[idxs], buf_rew[idxs],
+                                   T, N, mask_b=mb)
                 # per-member bootstrap mask over the bs sampled episodes
                 batch["bootstrap_mask"] = (
                     jax.random.uniform(kb, (K, bs)) < cfg.bootstrap_mask_prob
@@ -160,7 +196,7 @@ def make_emax_resumable_train(cfg, updates_per_iter: int | None = None):
             (params_ens, opt_state, rew_ms, key))
 
         carry = (params_ens, opt_state, rew_ms, buf_obs, buf_act, buf_rew,
-                 ptr, count, key)
+                 buf_mask, ptr, count, key)
         metrics = {**metrics, "loss": loss, "epsilon": eps}
         return carry, metrics
 

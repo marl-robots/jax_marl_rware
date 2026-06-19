@@ -41,6 +41,10 @@ def main():
     ap.add_argument("--use-rnn", action="store_true",
                     help="recurrent (GRU) ensemble matching epymarl IDQN; rollout "
                          "carries per-member hidden state.")
+    ap.add_argument("--action-mask", action="store_true",
+                    help="mask provably-no-op actions (FORWARD into a wall, inert "
+                         "TOGGLE_LOAD) at selection + target; optimum-preserving, "
+                         "removes wasted exploration. Off == unchanged behaviour.")
     ap.add_argument("--bptt-window", type=int, default=0,
                     help="truncated-BPTT window for --use-rnn (0 = full episode). "
                          "Cuts gradients every N steps to bound BPTT memory while "
@@ -61,10 +65,11 @@ def main():
         buffer_size=args.buffer_size, batch_size=args.batch_size,
         ensemble_size=args.ensemble_size, ucb_beta=args.ucb_beta,
         use_rnn=args.use_rnn, bptt_window=args.bptt_window,
+        use_action_mask=args.action_mask,
     )
     iters = args.iters
     chunk = max(1, args.checkpoint_every)
-    net_tag = "_rnn" if cfg.use_rnn else "_fc"
+    net_tag = ("_rnn" if cfg.use_rnn else "_fc") + ("_mask" if cfg.use_action_mask else "")
     run_dir = args.run_dir or os.path.join(
         "runs", f"emax{net_tag}_{cfg.size}-{cfg.n_agents}ag_K{cfg.ensemble_size}_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
@@ -73,7 +78,8 @@ def main():
     print(f"algo={cfg.algo}  env=rware-{cfg.size}-{cfg.n_agents}ag  "
           f"parallel_envs={cfg.parallel_envs}  time_limit={cfg.time_limit}  "
           f"K={cfg.ensemble_size} beta={cfg.ucb_beta}  buffer={cfg.buffer_size}ep "
-          f"batch={cfg.batch_size}ep  iters={iters}  chunk={chunk}")
+          f"batch={cfg.batch_size}ep  mask={cfg.use_action_mask}  "
+          f"iters={iters}  chunk={chunk}")
 
     trainer = make_emax_resumable_train(cfg, updates_per_iter=args.updates_per_iter)
     mgr = CheckpointManager(run_dir, max_to_keep=args.max_to_keep)

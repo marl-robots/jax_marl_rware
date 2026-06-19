@@ -89,6 +89,14 @@ class DQNConfig:
     parameter_sharing: bool = True
     obs_agent_id: bool = True        # append one-hot agent id to obs (EPyMARL)
 
+    # --- action masking (opt-in; off == byte-identical to the unmasked path) ---
+    # When True the env emits a [N, A] mask of PROVABLY-no-op actions
+    # (Warehouse.action_masks) that is applied identically at rollout action
+    # selection (UCB greedy + eps-random) and in the bootstrap-max target, so
+    # the optimal policy is provably unchanged and only wasted exploration is
+    # removed. Default off -> no mask is computed, stored, or applied.
+    use_action_mask: bool = False
+
     # --- EMAX extension (arXiv 2302.03439); off when ensemble_size == 1 ---
     use_emax: bool = False
     ensemble_size: int = 1           # K value functions per agent; paper uses 5
