@@ -39,6 +39,9 @@ def main():
     ap.add_argument("--num-epochs", type=int, default=4)
     ap.add_argument("--entropy-coef", type=float, default=1e-3)
     ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--no-rnn", action="store_true",
+                    help="feedforward actor/critic (no GRU/BPTT) -- much faster, "
+                         "tests whether Phi shaping removes the need for recurrence")
     ap.add_argument("--total-steps", type=int, default=None)
     ap.add_argument("--updates", type=int, default=None)
     # Phi shaping knobs
@@ -51,6 +54,9 @@ def main():
     ap.add_argument("--run-dir", default=None)
     ap.add_argument("--checkpoint-every", type=int, default=50)
     ap.add_argument("--max-to-keep", type=int, default=5)
+    ap.add_argument("--no-checkpoint", action="store_true",
+                    help="skip orbax checkpointing (avoids the WSL /mnt/c atomic-"
+                         "rename PermissionError; CSV + log still written)")
     ap.add_argument("--ema-decay", type=float, default=0.99)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--no-live-log", action="store_true")
@@ -61,6 +67,7 @@ def main():
         difficulty=args.difficulty, seed=args.seed,
         parallel_envs=args.parallel_envs, num_epochs=args.num_epochs,
         entropy_coef=args.entropy_coef, lr=args.lr,
+        use_rnn=not args.no_rnn,
     )
     if args.total_steps is not None:
         n_updates = args.total_steps // (cfg.time_limit * cfg.parallel_envs)
@@ -69,8 +76,9 @@ def main():
     else:
         n_updates = cfg.num_updates
 
+    net_tag = "" if cfg.use_rnn else "_fc"
     run_dir = args.run_dir or os.path.join(
-        "runs", f"mappo_pot_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
+        "runs", f"mappo_pot{net_tag}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
     chunk = max(1, args.checkpoint_every)
@@ -104,7 +112,10 @@ def main():
     logger = CSVLogger(csv_path, resume=resume)
     if start >= n_updates:
         print(f"nothing to do: start={start} >= n_updates={n_updates}")
-        logger.close(); mgr.wait(); return
+        logger.close()
+        if not args.no_checkpoint:
+            mgr.wait()
+        return
 
     ema = None
     t0 = time.perf_counter()
@@ -144,7 +155,8 @@ def main():
                 "mean_abs_bonus": float(m["mean_abs_bonus"][i]),
             })
         upd += k
-        mgr.save(upd, carry, smoothed_return=ema)
+        if not args.no_checkpoint:
+            mgr.save(upd, carry, smoothed_return=ema)
         deliv = float(m["deliveries"][-1])
         print(f"  upd {upd:5d}/{n_updates} | deliv {deliv:6.2f} | "
               f"return {ret_i:8.3f} | phi_loss {float(m['phi_loss'][-1]):.4f} | "
@@ -152,7 +164,9 @@ def main():
               f"{(upd - start) * batch_steps / max(time.perf_counter() - t0, 1e-9):,.0f} steps/s",
               flush=True)
 
-    mgr.wait(); logger.close()
+    if not args.no_checkpoint:
+        mgr.wait()
+    logger.close()
     dt = time.perf_counter() - t0
     total = (n_updates - start) * batch_steps
     print(f"\nran {n_updates - start} updates ({total:,} env steps) in {dt:.1f}s "
