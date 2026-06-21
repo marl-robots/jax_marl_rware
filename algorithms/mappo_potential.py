@@ -56,7 +56,8 @@ class PhiNet(nn.Module):
 
 
 def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
-                     phi_lr: float, phi_hidden: int, live_log: bool = False):
+                     phi_lr: float, phi_hidden: int, phi_beta_end: float = 0.0,
+                     phi_beta_anneal: int = 0, live_log: bool = False):
     env = Warehouse(make_config(cfg.size, cfg.n_agents, cfg.difficulty))
     N, E = cfg.n_agents, cfg.parallel_envs
     B = E * N
@@ -102,6 +103,15 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
         key, kreset, krun = jax.random.split(key, 3)
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))
 
+        # annealed shaping weight: high early (dense crutch over the sparse-reward
+        # hump), decays to phi_beta_end (default 0 -> unbiased: final policy
+        # optimises the TRUE reward, the imperfect Phi proxy's influence vanishes).
+        if phi_beta_anneal > 0:
+            frac = jnp.clip(1.0 - upd_idx / phi_beta_anneal, 0.0, 1.0)
+            beta_t = phi_beta_end + (phi_beta - phi_beta_end) * frac
+        else:
+            beta_t = phi_beta
+
         # ---- rollout: one full episode; add the Phi potential bonus per step ----
         def rollout_step(rc, _):
             states, obs, h_actor, welford, key = rc
@@ -116,7 +126,7 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
             # potential-based shaping bonus (beta * (gamma*Phi(s') - Phi(s)))
             phi_cur = phi_net.apply(phi_params, obs_flat).reshape(E, N)
             phi_nxt = phi_net.apply(phi_params, nobs.reshape(B, obs_dim)).reshape(E, N)
-            bonus = phi_beta * (cfg.gamma * phi_nxt - phi_cur)
+            bonus = beta_t * (cfg.gamma * phi_nxt - phi_cur)
             rstd_shaped = rstd + bonus
 
             sig = (info["deliveries"], info["forward_blocked"],
@@ -204,11 +214,13 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
 
 def make_resumable_train_potential(cfg: MAPPOConfig, *, phi_beta: float = 1.0,
                                    phi_epochs: int = 4, phi_lr: float = 3e-4,
-                                   phi_hidden: int = 64, live_log: bool = False):
+                                   phi_hidden: int = 64, phi_beta_end: float = 0.0,
+                                   phi_beta_anneal: int = 0, live_log: bool = False):
     """Resumable potential-MAPPO trainer, same chunked API as mappo.make_resumable_train."""
     env, actor, critic, phi_net, init_carry, update_step = _setup_potential(
         cfg, phi_beta=phi_beta, phi_epochs=phi_epochs, phi_lr=phi_lr,
-        phi_hidden=phi_hidden, live_log=live_log)
+        phi_hidden=phi_hidden, phi_beta_end=phi_beta_end,
+        phi_beta_anneal=phi_beta_anneal, live_log=live_log)
 
     @functools.partial(jax.jit, static_argnums=(2,))
     def train_from(carry, base_upd, n):

@@ -51,6 +51,12 @@ def main():
                     help="Phi gradient steps per update")
     ap.add_argument("--phi-lr", type=float, default=3e-4)
     ap.add_argument("--phi-hidden", type=int, default=64)
+    ap.add_argument("--phi-beta-end", type=float, default=0.0,
+                    help="anneal target for beta (0 = unbiased: shaping fully off "
+                         "late, final policy optimises the true reward)")
+    ap.add_argument("--phi-beta-anneal", type=int, default=0,
+                    help="updates over which beta decays --phi-beta -> --phi-beta-"
+                         "end (0 = constant beta)")
     ap.add_argument("--run-dir", default=None)
     ap.add_argument("--checkpoint-every", type=int, default=50)
     ap.add_argument("--max-to-keep", type=int, default=5)
@@ -86,7 +92,9 @@ def main():
     print(f"potential-MAPPO  env=rware-{cfg.size}-{cfg.n_agents}ag  "
           f"parallel_envs={cfg.parallel_envs}  num_epochs={cfg.num_epochs}  "
           f"entropy={cfg.entropy_coef}  seed={cfg.seed}")
-    print(f"phi: beta={args.phi_beta} epochs={args.phi_epochs} lr={args.phi_lr} "
+    sched = (f"{args.phi_beta}->{args.phi_beta_end} over {args.phi_beta_anneal}upd"
+             if args.phi_beta_anneal > 0 else f"{args.phi_beta} (const)")
+    print(f"phi: beta={sched} epochs={args.phi_epochs} lr={args.phi_lr} "
           f"hidden={args.phi_hidden}")
     print(f"updates={n_updates} (steps/update={batch_steps})  run-dir={run_dir}  "
           f"chunk={chunk}")
@@ -97,6 +105,7 @@ def main():
     trainer = make_resumable_train_potential(
         cfg, phi_beta=args.phi_beta, phi_epochs=args.phi_epochs,
         phi_lr=args.phi_lr, phi_hidden=args.phi_hidden,
+        phi_beta_end=args.phi_beta_end, phi_beta_anneal=args.phi_beta_anneal,
         live_log=not args.no_live_log)
 
     key = jax.random.PRNGKey(cfg.seed)
