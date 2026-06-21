@@ -42,6 +42,9 @@ def main():
     ap.add_argument("--no-rnn", action="store_true",
                     help="feedforward actor/critic (no GRU/BPTT) -- much faster, "
                          "tests whether Phi shaping removes the need for recurrence")
+    ap.add_argument("--cnn", action="store_true",
+                    help="spatial-CNN actor over the 3x3 sensor window (implies "
+                         "feedforward); FC centralised critic. sr=1 / obs_dim=71 only")
     ap.add_argument("--total-steps", type=int, default=None)
     ap.add_argument("--updates", type=int, default=None)
     # Phi shaping knobs
@@ -73,7 +76,7 @@ def main():
         difficulty=args.difficulty, seed=args.seed,
         parallel_envs=args.parallel_envs, num_epochs=args.num_epochs,
         entropy_coef=args.entropy_coef, lr=args.lr,
-        use_rnn=not args.no_rnn,
+        use_rnn=not (args.no_rnn or args.cnn),
     )
     if args.total_steps is not None:
         n_updates = args.total_steps // (cfg.time_limit * cfg.parallel_envs)
@@ -82,7 +85,7 @@ def main():
     else:
         n_updates = cfg.num_updates
 
-    net_tag = "" if cfg.use_rnn else "_fc"
+    net_tag = "_cnn" if args.cnn else ("" if cfg.use_rnn else "_fc")
     run_dir = args.run_dir or os.path.join(
         "runs", f"mappo_pot{net_tag}_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}")
     csv_path = os.path.join(run_dir, "results.csv")
@@ -106,7 +109,7 @@ def main():
         cfg, phi_beta=args.phi_beta, phi_epochs=args.phi_epochs,
         phi_lr=args.phi_lr, phi_hidden=args.phi_hidden,
         phi_beta_end=args.phi_beta_end, phi_beta_anneal=args.phi_beta_anneal,
-        live_log=not args.no_live_log)
+        use_cnn=args.cnn, live_log=not args.no_live_log)
 
     key = jax.random.PRNGKey(cfg.seed)
     carry = trainer["init_carry"](key)

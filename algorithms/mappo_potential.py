@@ -57,7 +57,8 @@ class PhiNet(nn.Module):
 
 def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
                      phi_lr: float, phi_hidden: int, phi_beta_end: float = 0.0,
-                     phi_beta_anneal: int = 0, live_log: bool = False):
+                     phi_beta_anneal: int = 0, use_cnn: bool = False,
+                     live_log: bool = False):
     env = Warehouse(make_config(cfg.size, cfg.n_agents, cfg.difficulty))
     N, E = cfg.n_agents, cfg.parallel_envs
     B = E * N
@@ -65,7 +66,10 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
     critic_dim = obs_dim * N if cfg.centralised_critic else obs_dim
     T, H = cfg.time_limit, cfg.hidden_dim
 
-    actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain, cfg.use_rnn)
+    # CNN: spatial conv actor over the local 3x3 window (feedforward); the
+    # centralised critic stays FC (its input is all-agents-concat, not a grid).
+    actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain,
+                     use_rnn=(cfg.use_rnn and not use_cnn), use_cnn=use_cnn)
     critic = CriticRNN(H, cfg.orthogonal_gain, cfg.use_rnn)
     phi_net = PhiNet(hidden=phi_hidden)
     tx = optax.adam(cfg.lr)
@@ -215,12 +219,13 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
 def make_resumable_train_potential(cfg: MAPPOConfig, *, phi_beta: float = 1.0,
                                    phi_epochs: int = 4, phi_lr: float = 3e-4,
                                    phi_hidden: int = 64, phi_beta_end: float = 0.0,
-                                   phi_beta_anneal: int = 0, live_log: bool = False):
+                                   phi_beta_anneal: int = 0, use_cnn: bool = False,
+                                   live_log: bool = False):
     """Resumable potential-MAPPO trainer, same chunked API as mappo.make_resumable_train."""
     env, actor, critic, phi_net, init_carry, update_step = _setup_potential(
         cfg, phi_beta=phi_beta, phi_epochs=phi_epochs, phi_lr=phi_lr,
         phi_hidden=phi_hidden, phi_beta_end=phi_beta_end,
-        phi_beta_anneal=phi_beta_anneal, live_log=live_log)
+        phi_beta_anneal=phi_beta_anneal, use_cnn=use_cnn, live_log=live_log)
 
     @functools.partial(jax.jit, static_argnums=(2,))
     def train_from(carry, base_upd, n):
