@@ -56,6 +56,20 @@ still crawling at **1.0**. ~7× faster takeoff, on a fully matched comparison.
   claim is "learns far faster per update/wall-time."
 - The 7.1 is **genuine** deliveries (raw signal), not inflated by the bonus.
 
+### Can we drop the RNN thanks to Φ? — YES (FC+Φ wins on wall-time)
+
+A first read at 50 envs/1200 updates (FC+Φ=1.72 vs RNN+Φ=7.10) suggested "keep the
+RNN" — but FC+Φ there was **starved and still rising**, not plateaued. Given a
+fair shot (FC is light → no OOM → many more envs, ~5–12× faster):
+
+**FC+Φ @ 200 envs (seed2):** deliveries 1.1 → 2.4 → 3.9 → 6.4 → **9.02 at update
+2500, still climbing**, in **~21 min wall-time** vs RNN+Φ's 7.1 in ~31 min. FC+Φ
+beats RNN+Φ on **both ceiling and wall-time**. So Φ's dense signal *does* stand in
+for the recurrent value's credit-assignment role; the FF policy just needed data,
+which FC supplies cheaply. (FC is far less sample-efficient *per env-step* — 250M
+vs 30M — but per-step cost is so low that wall-time favors it, and a 200-env
+*recurrent* MAPPO OOMs on the 4 GB GPU.) **Strong config: FC + Φ + many envs.**
+
 ## Run
 ```
 # potential-MAPPO (defaults match the proven MAPPO baseline; only Φ added)
