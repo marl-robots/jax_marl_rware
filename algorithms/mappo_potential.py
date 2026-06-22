@@ -58,7 +58,8 @@ class PhiNet(nn.Module):
 def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
                      phi_lr: float, phi_hidden: int, phi_beta_end: float = 0.0,
                      phi_beta_anneal: int = 0, use_cnn: bool = False,
-                     ppo_envs: int | None = None, live_log: bool = False):
+                     ppo_envs: int | None = None, phi_square: bool = False,
+                     live_log: bool = False):
     env = Warehouse(make_config(cfg.size, cfg.n_agents, cfg.difficulty))
     N, E = cfg.n_agents, cfg.parallel_envs
     B = E * N
@@ -135,7 +136,11 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
             # potential-based shaping bonus (beta * (gamma*Phi(s') - Phi(s)))
             phi_cur = phi_net.apply(phi_params, obs_flat).reshape(E, N)
             phi_nxt = phi_net.apply(phi_params, nobs.reshape(B, obs_dim)).reshape(E, N)
-            bonus = beta_t * (cfg.gamma * phi_nxt - phi_cur)
+            d = cfg.gamma * phi_nxt - phi_cur
+            # signed-square option: d*|d| amplifies big Phi-jumps (the causal
+            # pickup) relative to small drift. NOT potential-based -> no longer
+            # telescopes, so it can shift the optimum; keep beta modest.
+            bonus = beta_t * (d * jnp.abs(d) if phi_square else d)
             rstd_shaped = rstd + bonus
 
             sig = (info["deliveries"], info["forward_blocked"],
@@ -235,13 +240,13 @@ def make_resumable_train_potential(cfg: MAPPOConfig, *, phi_beta: float = 1.0,
                                    phi_hidden: int = 64, phi_beta_end: float = 0.0,
                                    phi_beta_anneal: int = 0, use_cnn: bool = False,
                                    ppo_envs: int | None = None,
-                                   live_log: bool = False):
+                                   phi_square: bool = False, live_log: bool = False):
     """Resumable potential-MAPPO trainer, same chunked API as mappo.make_resumable_train."""
     env, actor, critic, phi_net, init_carry, update_step = _setup_potential(
         cfg, phi_beta=phi_beta, phi_epochs=phi_epochs, phi_lr=phi_lr,
         phi_hidden=phi_hidden, phi_beta_end=phi_beta_end,
         phi_beta_anneal=phi_beta_anneal, use_cnn=use_cnn, ppo_envs=ppo_envs,
-        live_log=live_log)
+        phi_square=phi_square, live_log=live_log)
 
     @functools.partial(jax.jit, static_argnums=(2,))
     def train_from(carry, base_upd, n):

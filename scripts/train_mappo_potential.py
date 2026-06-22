@@ -64,6 +64,10 @@ def main():
                     help="episodes used for the (costly RNN BPTT) PPO update; Phi "
                          "still trains on all --parallel-envs. Small value = RNN "
                          "memory + lots of Phi data at cheap BPTT. Default = all.")
+    ap.add_argument("--phi-square", action="store_true",
+                    help="signed-square the potential diff (d*|d|): amplifies big "
+                         "Phi-jumps vs small drift. NOT optimum-preserving; needs a "
+                         "larger beta since squaring shrinks magnitudes.")
     ap.add_argument("--run-dir", default=None)
     ap.add_argument("--checkpoint-every", type=int, default=50)
     ap.add_argument("--max-to-keep", type=int, default=5)
@@ -113,7 +117,8 @@ def main():
         cfg, phi_beta=args.phi_beta, phi_epochs=args.phi_epochs,
         phi_lr=args.phi_lr, phi_hidden=args.phi_hidden,
         phi_beta_end=args.phi_beta_end, phi_beta_anneal=args.phi_beta_anneal,
-        use_cnn=args.cnn, ppo_envs=args.ppo_envs, live_log=not args.no_live_log)
+        use_cnn=args.cnn, ppo_envs=args.ppo_envs, phi_square=args.phi_square,
+        live_log=not args.no_live_log)
 
     key = jax.random.PRNGKey(cfg.seed)
     carry = trainer["init_carry"](key)
