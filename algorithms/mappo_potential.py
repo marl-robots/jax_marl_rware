@@ -58,10 +58,15 @@ class PhiNet(nn.Module):
 def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
                      phi_lr: float, phi_hidden: int, phi_beta_end: float = 0.0,
                      phi_beta_anneal: int = 0, use_cnn: bool = False,
-                     live_log: bool = False):
+                     ppo_envs: int | None = None, live_log: bool = False):
     env = Warehouse(make_config(cfg.size, cfg.n_agents, cfg.difficulty))
     N, E = cfg.n_agents, cfg.parallel_envs
     B = E * N
+    # Phi trains on ALL E rolled-out episodes (cheap: forward rollout + FF
+    # regression); the costly RNN PPO/BPTT update touches only the first Es of
+    # them -> RNN memory + lots of Phi data at a small-batch BPTT cost.
+    Es = E if ppo_envs is None else min(ppo_envs, E)
+    Bs = Es * N
     obs_dim = env.obs_dim
     critic_dim = obs_dim * N if cfg.centralised_critic else obs_dim
     T, H = cfg.time_limit, cfg.hidden_dim
@@ -144,13 +149,22 @@ def _setup_potential(cfg: MAPPOConfig, *, phi_beta: float, phi_epochs: int,
         (obs_t, act_t, rstd_t, rraw_t, bonus_t,
          deliv_t, blocked_t, noop_t, pickup_t, drop_t) = traj      # [T,E,N,*]
 
-        # ---- PPO update on the SHAPED reward (everything else verbatim) ----
+        # ---- PPO update on a SUBSET (Es) of the rolled-out episodes ----
+        # The expensive part (RNN BPTT) only touches Es episodes; Phi (below)
+        # still learns from all E. Es == E reproduces the original behaviour.
+        obs_p = obs_t[:, :Es]                                  # [T, Es, N, obs]
+        if cfg.centralised_critic:
+            cat = obs_p.reshape(T, Es, N * obs_dim)
+            central_p = jnp.broadcast_to(
+                cat[:, :, None, :], (T, Es, N, N * obs_dim)).reshape(T, Bs, N * obs_dim)
+        else:
+            central_p = obs_p.reshape(T, Bs, obs_dim)
         batch = {
-            "obs_flat_T": obs_t.reshape(T, B, obs_dim),
-            "act_flat_T": act_t.reshape(T, B),
-            "central_T": _critic_input(obs_t),
-            "rstd_TEN": rstd_t,
-            "dones_TEN": jnp.zeros((T, E, N)),
+            "obs_flat_T": obs_p.reshape(T, Bs, obs_dim),
+            "act_flat_T": act_t[:, :Es].reshape(T, Bs),
+            "central_T": central_p,
+            "rstd_TEN": rstd_t[:, :Es],
+            "dones_TEN": jnp.zeros((T, Es, N)),
         }
         params, target_critic, opt_state, diag = mappo_update(
             actor, critic, tx, cfg, params, target_critic, opt_state, batch)
@@ -220,12 +234,14 @@ def make_resumable_train_potential(cfg: MAPPOConfig, *, phi_beta: float = 1.0,
                                    phi_epochs: int = 4, phi_lr: float = 3e-4,
                                    phi_hidden: int = 64, phi_beta_end: float = 0.0,
                                    phi_beta_anneal: int = 0, use_cnn: bool = False,
+                                   ppo_envs: int | None = None,
                                    live_log: bool = False):
     """Resumable potential-MAPPO trainer, same chunked API as mappo.make_resumable_train."""
     env, actor, critic, phi_net, init_carry, update_step = _setup_potential(
         cfg, phi_beta=phi_beta, phi_epochs=phi_epochs, phi_lr=phi_lr,
         phi_hidden=phi_hidden, phi_beta_end=phi_beta_end,
-        phi_beta_anneal=phi_beta_anneal, use_cnn=use_cnn, live_log=live_log)
+        phi_beta_anneal=phi_beta_anneal, use_cnn=use_cnn, ppo_envs=ppo_envs,
+        live_log=live_log)
 
     @functools.partial(jax.jit, static_argnums=(2,))
     def train_from(carry, base_upd, n):
