@@ -11,75 +11,64 @@ from __future__ import annotations
 
 import csv
 import os
-# behavioral signals (commentary)
+
+import numpy as np
 
 COLUMNS = [
     "environment_steps",
     "updates",
-    "episode_time",
     "mean_episode_returns",
-    "std_episode_returns",
-    "mean_entropy",
-    "std_entropy",
-    "mean_loss",
-    "std_loss",
-    "mean_actor_loss",
-    "std_actor_loss",
-    "mean_value_loss",
-    "std_value_loss",
-    "mean_reward_std",
-    "std_reward_std",
-    "mean_deliveries",
-    "std_deliveries",
-    "mean_block_rate",
-    "std_block_rate",
-    "mean_idle_rate",
-    "std_idle_rate",
-    "mean_pickup_rate",
-    "std_pickup_rate",
-    "mean_deliveries_early",
-    "std_deliveries_early",
-    "mean_deliveries_mid",
-    "std_deliveries_mid",
-    "mean_deliveries_late",
-    "std_deliveries_late",
-    "mean_block_early",
-    "std_block_early",
-    "mean_block_mid",
-    "std_block_mid",
-    "mean_block_late",
-    "std_block_late",
-    "mean_distance_traveled",
-    "std_distance_traveled",
-    "mean_step_time",
-    "std_step_time",
-    "mean_step_count",
-    "std_step_count",
-    "mean_success",
-    "std_success",
-    "mean_success_rate",
-    "std_success_rate",
-    "mean_FPS",
-    "std_FPS",
+    "entropy",
+    "loss",
+    "actor_loss",
+    "value_loss",
+    "reward_std_mean",
+    # behavioral signals (commentary)
+    "deliveries",
+    "block_rate",
+    "idle_rate",
+    "pickup_rate",
+    "deliveries_early",
+    "deliveries_mid",
+    "deliveries_late",
+    "block_early",
+    "block_mid",
+    "block_late",
 ]
 
 
 class CSVLogger:
-    def __init__(self, path: str, resume: bool = False):
+    def __init__(
+        self,
+        path: str,
+        dict_keys: list[str],
+        full_metrics: bool = False,
+        resume: bool = False,
+    ):
         self.path = path
+        self.full_metrics = full_metrics
         d = os.path.dirname(os.path.abspath(path))
         os.makedirs(d, exist_ok=True)
-        write_header = not (resume and os.path.isfile(path)
-                            and os.path.getsize(path) > 0)
+        write_header = not (
+            resume and os.path.isfile(path) and os.path.getsize(path) > 0
+        )
         self._f = open(path, "a", newline="")
         self._w = csv.writer(self._f)
         if write_header:
-            self._w.writerow(COLUMNS)
+            if not full_metrics:
+                self._w.writerow(COLUMNS)
+            else:
+                self.dict_keys = dict_keys
+                self._w.writerow(dict_keys)
             self._f.flush()
 
-    def log(self, row: dict) -> None:
-        self._w.writerow([row.get(c, "") for c in COLUMNS])
-        self._f.flush()
+    def log(self, raw: dict) -> None:
+        if self.full_metrics:
+            self._w.writerow([raw.get(c, f"{np.finfo(np.float32).max}") for c in self.dict_keys])
+            self._f.flush()
+        else:
+            self._w.writerow([raw.get(c, "") for c in COLUMNS])
+            self._f.flush()
 
     def close(self) -> None:
         try:

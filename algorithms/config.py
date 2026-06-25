@@ -26,6 +26,8 @@ _ALGO_FLAGS = {
     "ia2c": (False, False),
     "ippo": (False, True),
     "maa2c": (True, False),
+    "ica2c": (False, True),
+    "maca2c": (True, False),
     "mappo": (True, True),
 }
 
