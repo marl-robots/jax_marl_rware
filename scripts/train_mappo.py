@@ -29,6 +29,7 @@ from algorithms.commentary import Narrator
 from algorithms.config import MAPPOConfig
 from algorithms.mappo import make_resumable_train
 from algorithms.metrics import CSVLogger
+from algorithms.replay import make_recorder, save_replay
 
 
 def main():
@@ -74,6 +75,13 @@ def main():
                     help="disable the per-update stdout live log")
     ap.add_argument("--no-commentary", action="store_true",
                     help="disable the per-chunk behavioral commentary (Layer 2)")
+    ap.add_argument("--replay-every", type=int, default=None,
+                    help="record an episode replay (.npz under <run-dir>/replays/) "
+                         "every K updates, at chunk boundaries (default: every "
+                         "chunk; 0 disables)")
+    ap.add_argument("--replay-seed", type=int, default=0,
+                    help="fixed RNG seed for replay episodes, so snapshots across "
+                         "training differ only by the policy")
     args = ap.parse_args()
 
     # When resuming with a known run-dir, load the saved config as the base so
@@ -173,6 +181,28 @@ def main():
 
     # ---- chunked training loop (orbax saves between chunks, main thread) ----
     narrator = None if args.no_commentary else Narrator()
+    replay_every = chunk if args.replay_every is None else args.replay_every
+    recorder = make_recorder(trainer["env"], trainer["actor"], cfg) \
+        if replay_every > 0 else None
+    replay_key = jax.random.PRNGKey(args.replay_seed)
+    next_replay = (start // replay_every + 1) * replay_every \
+        if replay_every > 0 else None
+
+    def record_snapshot(upd_now: int) -> None:
+        """One fixed-seed eval episode from the current actor -> replays/."""
+        traj, scalars = recorder(carry[0]["actor"], replay_key)
+        path = save_replay(
+            run_dir, traj, scalars, env=trainer["env"], cfg=cfg,
+            update=upd_now, env_steps=upd_now * batch_steps,
+            seed=args.replay_seed, algo=cfg.algo)
+        print(f"  [replay @ update {upd_now}] return {float(scalars[0]):.2f}  "
+              f"deliveries {int(scalars[1])}  -> {path}", flush=True)
+
+    # snapshot the untrained (or resumed) policy first — frame 0 of the story
+    if recorder is not None:
+        record_snapshot(start)
+    last_replay = start
+
     ema = None
     t0 = time.perf_counter()
     upd = start
@@ -211,6 +241,14 @@ def main():
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
 
+        # replay snapshots (chunk granularity: record once when a boundary is
+        # crossed; intra-chunk params are gone anyway)
+        if recorder is not None and upd >= next_replay:
+            record_snapshot(upd)
+            last_replay = upd
+            while next_replay <= upd:
+                next_replay += replay_every
+
         # Layer 2: one behavioral commentary block per chunk (host-side, between
         # chunks -> no effect on the fused-scan rollout speed).
         if narrator is not None:
@@ -218,6 +256,10 @@ def main():
                 "episode_return", "deliveries", "block_rate", "idle_rate",
                 "deliveries_early", "deliveries_mid", "deliveries_late")}
             print(narrator.chunk(upd, stats), flush=True)
+
+    # final-policy replay even when the run length isn't a cadence multiple
+    if recorder is not None and last_replay != n_updates:
+        record_snapshot(n_updates)
 
     mgr.wait()
     logger.close()

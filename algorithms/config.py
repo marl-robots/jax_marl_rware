@@ -50,6 +50,8 @@ class MAPPOConfig:
     use_ppo: bool = True             # True -> PPO (clipped, num_epochs); False -> A2C (1 step)
     num_epochs: int = 4              # PPO epochs over the whole batch (no minibatching); A2C uses 1
     ppo_clip: float = 0.2            # PPO clip range; ignored for A2C
+    seac_coef: float = 1.0           # SEAC shared-experience weight (lambda); only used by seac.py
+    is_clip: float = 0.0             # SEAC: clip importance weight to <= is_clip (0 = no clip = canonical)
     standardise_returns: bool = False
     standardise_rewards: bool = True
     target_update_tau: float = 0.01  # soft Polyak update every update (< 1 -> soft)
