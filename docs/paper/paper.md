@@ -204,6 +204,8 @@ step-for-step parity.
 | Jumanji `RobotWarehouse` | 107k steps/s | 2.4M steps/s |
 | RWARE (original Gym) | 2.7k steps/s | — (single process) |
 
+![Figure 4: environment throughput on tiny-4ag under a random policy (log scale). The faithful JAX engine is ~3.8x Jumanji and ~3400x the original Gym environment on GPU.](figs/fig4_speed.png)
+
 ---
 
 ## 4. Cooperative MARL Baselines
@@ -318,7 +320,9 @@ logs).**
 | large  | 29×16 | _pending_ | _pending_ | _pending_ |
 <!-- RESULTS_TABLE_END -->
 
-*(Figure 1: learning curves; Figure 2: final-performance bars by size.)*
+![Figure 1: IDQN-EMAX (K=5) deliveries-per-episode learning curves across the four warehouse sizes (EMA-smoothed, raw signal ghosted). Larger maps are sparser and take off later.](figs/fig1_scaling.png)
+
+![Figure 2: final delivery performance (final-10% mean) by warehouse size, with grid dimensions. The ensemble-with-UCB policy carries from the tiny warehouse to the larger maps.](figs/fig2_final_bar.png)
 
 ### 5.5 Ensemble ablation
 
@@ -331,6 +335,8 @@ on the larger map, consistent with EMAX's exploration argument.
 <!-- ABLATION_START -->
 *Ablation numbers finalised from run logs: pending.*
 <!-- ABLATION_END -->
+
+![Figure 3: ensemble ablation on medium-4ag. K=5 (EMAX) vs K=1 (single value function, no UCB uncertainty bonus).](figs/fig3_ablation.png)
 
 ---
 
