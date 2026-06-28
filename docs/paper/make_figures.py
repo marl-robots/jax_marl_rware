@@ -21,7 +21,12 @@ import numpy as np
 import pandas as pd
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-PAPER = os.path.join(ROOT, "runs", "paper")
+# Prefer the live run dir; fall back to the CSVs archived in-repo so the figures
+# regenerate from a fresh clone (runs/ is gitignored).
+_RUNS = os.path.join(ROOT, "runs", "paper")
+_ARCHIVE = os.path.join(ROOT, "docs", "paper", "data")
+PAPER = _RUNS if os.path.exists(
+    os.path.join(_RUNS, "emax_tiny_4ag_s1", "results.csv")) else _ARCHIVE
 FIGS = os.path.join(ROOT, "docs", "paper", "figs")
 os.makedirs(FIGS, exist_ok=True)
 

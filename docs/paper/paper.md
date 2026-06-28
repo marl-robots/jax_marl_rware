@@ -487,6 +487,10 @@ Reinforcement Learning Environments in JAX.* ICLR 2024.
 result with `python -m scripts.train_dqn_fast --size <tiny|small|medium|large>
 --n-agents 4 --ensemble-size 5`; validate with `python -m pytest tests/`.
 
+*Data availability:* the per-iteration metric logs behind every figure are
+archived in-repo at `docs/paper/data/`; `python docs/paper/make_figures.py`
+regenerates all figures and the measured results table from them.
+
 ---
 
 ## Appendix A — IDQN-EMAX hyperparameters
