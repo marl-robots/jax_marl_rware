@@ -467,3 +467,39 @@ Reinforcement Learning Environments in JAX.* ICLR 2024.
 `final-project` branch of the `jax_marl3` repository. Reproduce the headline
 result with `python -m scripts.train_dqn_fast --size <tiny|small|medium|large>
 --n-agents 4 --ensemble-size 5`; validate with `python -m pytest tests/`.
+
+---
+
+## Appendix A — IDQN-EMAX hyperparameters
+
+The base learner reproduces the EPyMARL IQL reference configuration; the EMAX
+knobs follow the paper's defaults. These are the exact values used for every
+experiment in §5 (transcribed from `algorithms/dqn_config.py` and the
+`scripts/train_dqn_fast` defaults).
+
+| group | parameter | value |
+|---|---|---|
+| **Ensemble (EMAX)** | members `K` | 5 |
+| | UCB weight `β` | 1.0 |
+| | bootstrap mask prob. | 0.5 (per-member Bernoulli over the minibatch) |
+| | target | ensemble mean, TD(0); **no** target network |
+| | eval action | majority vote |
+| **Network** | type | feedforward (GRU variant available, off by default) |
+| | hidden width | 128 |
+| | obs augmentation | one-hot agent id appended |
+| **Optimisation** | optimiser | Adam (β₁=0.9, β₂=0.999, ε=1e-8) |
+| | learning rate | 3×10⁻⁴ |
+| | grad clip | global ℓ2-norm 10 (before the Adam step) |
+| | discount `γ` | 0.99 |
+| | reward standardisation | running mean/var (unbiased), on |
+| **Replay / control** | buffer | 1000 episodes, device-resident ring |
+| | batch | 32 episodes per gradient step |
+| | exploration | ε-greedy warmup 1.0→0.05 over 200k steps, then UCB-greedy |
+| **Rollout** | parallel envs | 8 |
+| | episode length | 500 steps (fixed; no inactivity cutoff) |
+| **Hardware** | device | single NVIDIA RTX 3050 (4 GB), JAX/CUDA-12 |
+
+**Reward convention.** RWARE pays individual credit; following EPyMARL's
+`common_reward`, per-agent rewards are summed into the shared team reward used for
+the value targets. Episodes are a fixed 500 steps, so there is no termination
+padding.
