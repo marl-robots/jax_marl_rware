@@ -65,6 +65,16 @@ def tail_mean(df, frac=0.1):
 
 
 # ---- Figure 1: EMAX learning curves across map sizes (scaling) -------------
+def seed_finals(sz):
+    """Per-seed final (tail-10%) deliveries for a size; seeds s1, s2 if present."""
+    vals = []
+    for tag in (f"emax_{sz}_4ag_s1", f"emax_{sz}_4ag_s2"):
+        df = load(tag)
+        if df is not None:
+            vals.append(tail_mean(df))
+    return vals
+
+
 def fig_scaling():
     fig, ax = plt.subplots(figsize=(6.4, 4.0))
     rows = []
@@ -77,7 +87,10 @@ def fig_scaling():
         ax.plot(x, y, color=COLORS[sz], alpha=0.18, lw=0.8)
         ax.plot(x, ema(y), color=COLORS[sz], lw=2.0,
                 label=f"{sz} ({GRID[sz][0]}x{GRID[sz][1]})")
-        rows.append((sz, x[-1], tail_mean(df), float(y.max())))
+        finals = seed_finals(sz)
+        mean_final = sum(finals) / len(finals)
+        spread = (max(finals) - min(finals)) / 2 if len(finals) > 1 else 0.0
+        rows.append((sz, x[-1], mean_final, spread, float(y.max()), len(finals)))
     ax.set_xlabel("environment steps (millions)")
     ax.set_ylabel("deliveries / episode")
     ax.set_title("IDQN-EMAX (K=5): learning across warehouse sizes")
@@ -93,12 +106,15 @@ def fig_final_bar(rows):
         return
     fig, ax = plt.subplots(figsize=(5.2, 3.4))
     labels = [f"{sz}\n{GRID[sz][0]}x{GRID[sz][1]}" for sz, *_ in rows]
-    vals = [tm for _, _, tm, _ in rows]
-    ax.bar(labels, vals, color=[COLORS[sz] for sz, *_ in rows])
+    vals = [tm for _, _, tm, _, _, _ in rows]
+    errs = [sp for _, _, _, sp, _, _ in rows]
+    ax.bar(labels, vals, yerr=errs, capsize=4,
+           color=[COLORS[sz] for sz, *_ in rows])
     for i, v in enumerate(vals):
-        ax.text(i, v, f"{v:.2f}", ha="center", va="bottom", fontsize=9)
+        ax.text(i, v + errs[i], f"{v:.2f}", ha="center", va="bottom", fontsize=9)
     ax.set_ylabel("deliveries / episode (final-10% mean)")
     ax.set_title("IDQN-EMAX scales to larger warehouses")
+    ax.margins(y=0.15)
     fig.savefig(os.path.join(FIGS, "fig2_final_bar.png"))
     plt.close(fig)
 
@@ -169,10 +185,12 @@ def main():
     fig_speed()
 
     print("\n## EMAX scaling results (measured)\n")
-    print("| map | grid | env steps (M) | final deliv (tail-10%) | peak deliv |")
-    print("|---|---|---|---|---|")
-    for sz, xm, tm, pk in rows:
-        print(f"| {sz} | {GRID[sz][0]}x{GRID[sz][1]} | {xm:.1f} | {tm:.2f} | {pk:.1f} |")
+    print("| map | grid | env steps (M) | seeds | final deliv (tail-10%) | peak deliv |")
+    print("|---|---|---|---|---|---|")
+    for sz, xm, tm, sp, pk, ns in rows:
+        pm = f" +/- {sp:.2f}" if ns > 1 else ""
+        print(f"| {sz} | {GRID[sz][0]}x{GRID[sz][1]} | {xm:.0f} | {ns} | "
+              f"{tm:.2f}{pm} | {pk:.1f} |")
     if abl:
         print("\n## Ensemble ablation on medium-4ag (measured)\n")
         for k, v in abl.items():

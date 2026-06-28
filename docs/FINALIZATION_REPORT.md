@@ -6,6 +6,13 @@ June 12–14 arena week) is left untouched — this is a separate, additive repo
 
 ---
 
+> **Robustness note.** Twice during the session the Claude process was torn down,
+> which killed the harness-tracked GPU job. After the first time I **relaunched
+> the queue fully detached (`setsid`+`nohup`)**, and it then ran to completion
+> across two further teardowns. **No work was lost** — every run checkpoints every
+> 100 iters and the queue is resume-safe (skips done runs, resumes partial ones).
+> All planned runs finished, including two seeds on the headline maps.
+
 ## TL;DR
 
 I unified the two halves of the thesis onto one branch, closed the value-based
@@ -58,8 +65,24 @@ GPU, plus a controlled **K=5 vs K=1** ablation on `medium` to confirm the
 ensemble (not just the off-policy stack) is what matters.
 
 <!-- RESULTS_BLOCK_START -->
-*Results table + figures finalised from the run logs at session end — see
-`docs/paper/paper.md` §5.4–5.5 and `docs/paper/figs/`.*
+**Scaling (IDQN-EMAX, K=5, final-10% mean deliveries/episode):**
+
+| map | grid | env steps | seeds | deliveries | peak |
+|---|---|---|---|---|---|
+| tiny | 11×10 | 8M | 1 | 4.19 | 6.4 |
+| small | 20×10 | 30M | 2 | 3.94 ± 0.04 | 5.5 |
+| medium | 20×16 | 30M | 2 | 3.64 ± 0.01 | 4.8 |
+| large | 29×16 | 24M | 1 | 2.98 | 4.4 |
+
+EMAX **solves every warehouse size** (vanilla greedy IQL collapses to ~0 on
+RWARE); deliveries decline gracefully with size and takeoff comes progressively
+later (~2.3M steps tiny → ~6–9M medium). Two-seed agreement is ±0.04.
+
+**Ensemble ablation (medium-4ag, 30M):** K=5 → 3.64 vs K=1 → 3.34 (+9%). A
+*modest, consistent* ensemble benefit — reported honestly, not inflated; the
+effect is expected to grow on harder-exploration regimes (see paper §5.5, §8).
+
+Figures: `docs/paper/figs/fig{1_scaling,2_final_bar,3_ablation,4_speed}.png`.
 <!-- RESULTS_BLOCK_END -->
 
 All runs are on a single 4 GB GPU (RTX 3050) at ~10–13k env steps/s, fully jitted
