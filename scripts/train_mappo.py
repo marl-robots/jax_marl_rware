@@ -33,9 +33,10 @@ from algorithms.metrics import CSVLogger
 
 from algorithms.metrics_funcs import create_dummy_metrics, sort_metrics
 from algorithms.metrics_handler import process_raw
-from jaxrware.config import Action
 
-from algorithms.metrics_parallel import init_Asylogger,BlockProcessor
+from algorithms.metrics_parallel import BlockProcessor, init_Asylogger
+from algorithms.replay import make_recorder, save_replay
+from jaxrware.config import Action
 
 
 def init_logger(
@@ -149,6 +150,21 @@ def main():
         help="disable the per-chunk behavioral commentary (Layer 2)",
     )
     ap.add_argument(
+        "--replay-every",
+        type=int,
+        default=None,
+        help="record an episode replay (.npz under <run-dir>/replays/) "
+        "every K updates, at chunk boundaries (default: every "
+        "chunk; 0 disables)",
+    )
+    ap.add_argument(
+        "--replay-seed",
+        type=int,
+        default=0,
+        help="fixed RNG seed for replay episodes, so snapshots across "
+        "training differ only by the policy",
+    )
+    ap.add_argument(
         "--full-metrics",
         action="store_true",
         help="disable the per-chunk behavioral commentary (Layer 2)",
@@ -193,13 +209,13 @@ def main():
             "runs",
             "resume",
             f"{date_time}",
-            f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag",
+            f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}",
         )
     else:
         run_dir = args.run_dir or os.path.join(
             "runs",
             f"{date_time}",
-            f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag",
+            f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}",
         )
 
     csv_path = os.path.join(run_dir, "results.csv")
@@ -253,12 +269,13 @@ def main():
     N = MAPPOConfig.n_agents
     A = len(Action)
     use_full_metrics = args.full_metrics
-    #logger = init_logger(csv_path, E, N, A, use_full_metrics, resume)
+    # logger = init_logger(csv_path, E, N, A, use_full_metrics, resume)
     logger = init_Asylogger(csv_path, E, N, A, use_full_metrics, resume)
-    block_processor=BlockProcessor(logger)
+    block_processor = BlockProcessor(logger)
     if start >= n_updates:
         print(f"nothing to do: start={start} >= n_updates={n_updates}")
         logger.close()
+        block_processor.close()
         mgr.wait()
         return
 
@@ -271,6 +288,43 @@ def main():
 
     # ---- chunked training loop (orbax saves between chunks, main thread) ----
     narrator = None if args.no_commentary else Narrator()
+    replay_every = chunk if args.replay_every is None else args.replay_every
+    recorder = (
+        make_recorder(trainer["env"], trainer["actor"], cfg)
+        if replay_every > 0
+        else None
+    )
+    replay_key = jax.random.PRNGKey(args.replay_seed)
+    next_replay = (
+        (start // replay_every + 1) * replay_every if replay_every > 0 else None
+    )
+
+    def record_snapshot(upd_now: int) -> None:
+        """One fixed-seed eval episode from the current actor -> replays/."""
+        if recorder is not None:
+            traj, scalars = recorder(carry[0]["actor"], replay_key)
+            path = save_replay(
+                run_dir,
+                traj,
+                scalars,
+                env=trainer["env"],
+                cfg=cfg,
+                update=upd_now,
+                env_steps=upd_now * batch_steps,
+                seed=args.replay_seed,
+                algo=cfg.algo,
+            )
+            print(
+                f"  [replay @ update {upd_now}] return {float(scalars[0]):.2f}  "
+                f"deliveries {int(scalars[1])}  -> {path}",
+                flush=True,
+            )
+
+    # snapshot the untrained (or resumed) policy first — frame 0 of the story
+    if recorder is not None:
+        record_snapshot(start)
+    last_replay = start
+
     ema = None
     t0 = time.perf_counter()
     upd = start
@@ -283,11 +337,11 @@ def main():
         )
         carry = jax.block_until_ready(carry)
         m = {key: np.asarray(val) for key, val in episode_metrics.items()}
-        
+
         if use_full_metrics:
-            args_taks=(metrics_tensors, upd, batch_steps, A)
+            args_taks = (metrics_tensors, upd, batch_steps, A)
             block_processor.add_task(args_taks)
-        
+
         for i in range(k):
             done_count = upd + i + 1
             ret_i = float(episode_metrics["episode_return"][i])
@@ -296,28 +350,28 @@ def main():
                 if ema is None
                 else (args.ema_decay * ema + (1.0 - args.ema_decay) * ret_i)
             )
-            
+
             if not use_full_metrics:
                 logger.log(
                     {
                         "environment_steps": done_count * batch_steps,
                         "updates": done_count,
-                        "mean_episode_returns": ret_i,
-                        "entropy": float(m["entropy"][i]),
-                        "loss": float(m["loss"][i]),
-                        "actor_loss": float(m["actor_loss"][i]),
-                        "value_loss": float(m["value_loss"][i]),
+                        "episode_returns_mean": ret_i,
+                        "entropy_mean": float(m["entropy"][i]),
+                        "loss_mean": float(m["loss"][i]),
+                        "actor_loss_mean": float(m["actor_loss"][i]),
+                        "value_loss_mean": float(m["value_loss"][i]),
                         "reward_std_mean": float(m["reward_std_mean"][i]),
-                        "deliveries": float(m["deliveries"][i]),
-                        "block_rate": float(m["block_rate"][i]),
-                        "idle_rate": float(m["idle_rate"][i]),
-                        "pickup_rate": float(m["pickup_rate"][i]),
-                        "deliveries_early": float(m["deliveries_early"][i]),
-                        "deliveries_mid": float(m["deliveries_mid"][i]),
-                        "deliveries_late": float(m["deliveries_late"][i]),
-                        "block_early": float(m["block_early"][i]),
-                        "block_mid": float(m["block_mid"][i]),
-                        "block_late": float(m["block_late"][i]),
+                        "deliveries_mean": float(m["deliveries"][i]),
+                        "block_rate_mean": float(m["block_rate"][i]),
+                        "idle_rate_mean": float(m["idle_rate"][i]),
+                        "pickup_rate_mean": float(m["pickup_rate"][i]),
+                        "deliveries_early_mean": float(m["deliveries_early"][i]),
+                        "deliveries_mid_mean": float(m["deliveries_mid"][i]),
+                        "deliveries_late_mean": float(m["deliveries_late"][i]),
+                        "block_early_mean": float(m["block_early"][i]),
+                        "block_mid_mean": float(m["block_mid"][i]),
+                        "block_late_mean": float(m["block_late"][i]),
                     }
                 )
 
@@ -325,6 +379,13 @@ def main():
         if not ema is None:
             mgr.save(upd, carry, smoothed_return=ema)
 
+        # replay snapshots (chunk granularity: record once when a boundary is
+        # crossed; intra-chunk params are gone anyway)
+        if recorder is not None and next_replay is not None and upd >= next_replay:
+            record_snapshot(upd)
+            last_replay = upd
+            while next_replay <= upd:
+                next_replay += replay_every
         # Layer 2: one behavioral commentary block per chunk (host-side, between
         # chunks -> no effect on the fused-scan rollout speed).
         if narrator is not None:
@@ -342,6 +403,9 @@ def main():
             }
             print(narrator.chunk(upd, stats), flush=True)
 
+    # final-policy replay even when the run length isn't a cadence multiple
+    if recorder is not None and last_replay != n_updates:
+        record_snapshot(n_updates)
     mgr.wait()
     block_processor.close()
     logger.close()

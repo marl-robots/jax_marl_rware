@@ -2,7 +2,6 @@ from typing import Dict, Optional
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import re
 
 # Fairness / Imbalance (Gini, Lorenz, per-agent stats)
@@ -33,7 +32,7 @@ def gini_coefficient(x):
     c = (n + 1) / (n)
 
     gini = a / b - c
-    gini = jnp.where(jnp.isnan(gini), 0, gini)
+    gini = jnp.where(jnp.isnan(gini), jnp.inf, gini)
 
     return gini
 
@@ -63,8 +62,8 @@ def lorenz_curve(x):
     cum = jnp.cumsum(sorted_vals, axis=-1)  # shape (E, N)
     x_axis = jnp.arange(1, N + 1) / N  # shape (N,)
     y_axis = cum / cum[:, -1][:, None]  # shape (E, N)
-    x_axis = jnp.where(jnp.isnan(x_axis), 0, x_axis)
-    y_axis = jnp.where(jnp.isnan(y_axis), 0, y_axis)
+    x_axis = jnp.where(jnp.isnan(x_axis), jnp.inf, x_axis)
+    y_axis = jnp.where(jnp.isnan(y_axis),jnp.inf, y_axis)
     return x_axis, y_axis
 
 
@@ -87,10 +86,9 @@ def fairness_metrics(x):
         Deliveries/rewards/Any Contribution
     """
     gini = gini_coefficient(x)  # [T, E, N] -> [E]
-
     gini_mean = gini.mean()
-    gini_std = gini.std()
-
+    gini_std = jnp.nan_to_num(gini.std(), nan=jnp.inf)
+    
     # Lorenz curve for a representative episode
     lorenz = lorenz_curve(x)  # [T, E, N] -> [E]
 
@@ -105,8 +103,7 @@ def fairness_metrics(x):
 
 
 # Actor / Critic losses (mean/std/p10/p90/skew)
-
-
+#rewards_std after 
 def loss_stats(loss):
     """Calculate mean, std,skew and percentile 10,50,90
     Args:
@@ -136,6 +133,47 @@ def loss_stats(loss):
         "loss_p50": p50,
         "loss_p90": p90,
         "loss_skew": skew,
+    }
+
+#rewards_std after 
+def returns_stats(returns):
+    """Calculate mean, std,skew and percentile 10,50,90
+    Args:
+        returns: shape[P, T, E, N]
+    Returns:
+        returns_per_agent_mean# shape[N]
+        returns_per_agent_std #shape [N]
+
+        returns_mean: scalar
+
+        returns_std: scalar
+
+        returns_p10: scalar
+
+        returns_p50: scalar
+
+        returns_p90: scalar
+
+        returns_skew: scalar
+    """
+    # flat = loss.reshape(-1)
+    p10, p50, p90 = jnp.percentile(returns, jnp.array([10, 50, 90]))
+    mean = returns.mean()
+    std = returns.std()
+    skew = jnp.mean(((returns - mean) / (std + 1e-8)) ** 3)
+
+    returns_per_agent_mean=returns.sum(axis=(0,1)).mean(axis=0)
+    returns_per_agent_std=returns.sum(axis=(0,1)).std(axis=0)
+    
+    return {
+        "returns_per_agent_mean":returns_per_agent_mean,# [N]
+        "returns_per_agent_std":returns_per_agent_std,# [N]
+        "returns_mean": mean,
+        "returns_std": std,
+        "returns_p10": p10,
+        "returns_p50": p50,
+        "returns_p90": p90,
+        "returns_skew": skew,
     }
 
 
@@ -226,11 +264,11 @@ def gradient_norms_per_agent(grads, N, O):
 
 
     Returns:
-        per_agent_norms: shape(P,N,)
+        grad_norms_per_agent_per_epoch: shape(P,N,)
 
-        mean_per_agent: shape (N,),
+        grad_norms_per_agent_mean: shape (N,),
 
-        std_per_agent: shape (N,),
+        grad_norms_per_agent_std: shape (N,),
 
         grad_norms_per_agent_p90: shape (N,),
     """
@@ -262,7 +300,7 @@ def gradient_norms_per_agent(grads, N, O):
         total_norm = jnp.sum(jnp.stack(per_param_agent_norms, axis=0), axis=0)
 
     return {
-        "grad_norms_per_agent_per_epoch": total_norm,  # (P, N)
+        #"grad_norms_per_agent_per_epoch": total_norm,  # (P, N)
         "grad_norms_per_agent_mean": total_norm.mean(axis=0),  # (N,)
         "grad_norms_per_agent_std": total_norm.std(axis=0),  # (N,)
         # (N,)
@@ -295,7 +333,7 @@ def gradient_norms(grads):
         param_norm = jnp.sqrt(jnp.sum(g**2, axis=param_axes))
 
         per_param_norms.append(param_norm)
-
+        
     # sum norms across all parameters → shape (P,)
     total_norm = jnp.sum(jnp.stack(per_param_norms, axis=0), axis=0)
 
@@ -358,11 +396,11 @@ def rware_metric(rewards, deliveries):
         }
     else:
         weighted_metric = {
-            "rware_mean": jnp.float32(0.0),
-            "rware_std": jnp.float32(0.0),
-            "rware_p10": jnp.float32(0.0),
-            "rware_p50": jnp.float32(0.0),
-            "rware_p90": jnp.float32(0.0),
+            "rware_mean": jnp.inf,
+            "rware_std": jnp.inf,
+            "rware_p10": jnp.inf,
+            "rware_p50": jnp.inf,
+            "rware_p90": jnp.inf,
         }
 
     return weighted_metric
@@ -392,9 +430,9 @@ def credit_assignment_proxies(actions: jnp.ndarray, rewards: jnp.ndarray):
     """
     # --- shape checks ---
     if actions.ndim != 3 or rewards.ndim != 3:
-        raise ValueError("actions and returns must have shape (T, E, N)")
+        raise ValueError("actions and rewards must have shape (T, E, N)")
     if actions.shape != rewards.shape:
-        raise ValueError("actions and returns must have identical shapes (T, E, N)")
+        raise ValueError("actions and rewards must have identical shapes (T, E, N)")
 
     T, E, N = actions.shape
 
@@ -555,7 +593,6 @@ def advantage_stats(advantage):
         - Percentiles computed with jnp.percentile.
         - Optionally returns flattened raw array if return_raw=True.
     """
-    return_raw = False
     eps = 1e-12  # Use eps to avoid division by zero
     if advantage.ndim != 4:
         raise ValueError("advantage must have shape [P, T, E, N]")
@@ -592,8 +629,6 @@ def advantage_stats(advantage):
         "advantage_p90": p90,
         "advantage_skew": skew,
     }
-    if return_raw:
-        out["adv_raw"] = flat
     return out
 
 
@@ -694,9 +729,6 @@ def analyze_update(
     # -----------------------------
     def classify_trend(arr):
         delta = arr[-1] - arr[0]
-        # if jnp.abs(delta) < 1e-6:
-        #    return jnp.float32(0.0)
-        # return jnp.float32(1.0) if delta > 0 else jnp.float32(-1.0)
         return jnp.float32(delta)
 
     # -----------------------------
@@ -707,14 +739,14 @@ def analyze_update(
         "cumulative_ratio": cumulative_ratio,  # (P,)
         "critic_loss_per_epoch": critic_loss_per_epoch,  # (P,)
         "actor_loss_per_epoch": actor_loss_per_epoch,  # (P,)
-        "entropy_per_epoch": entropy_per_epoch,  # (P,)
+        #"entropy_per_epoch": entropy_per_epoch,  # (P,)
         "q_value_magnitude": q_magnitude,  # (P,)
-        "UTD": jnp.float32(utd) if not None else jnp.inf,  # scalar
+        "UTD": jnp.float32(utd) if utd is not None else jnp.inf,  # scalar
         "critic_loss_trend": classify_trend(critic_loss_per_epoch),  # scalar
         "actor_loss_trend": classify_trend(actor_loss_per_epoch),  # scalar
-        "entropy_trend": classify_trend(entropy_per_epoch),  # scalar
+        #"entropy_trend": classify_trend(entropy_per_epoch),  # scalar
         "q_value_trend": classify_trend(q_magnitude),  # scalar
-        "ratio_trend": classify_trend(per_epoch_ratio),  # scalar
+        "per_epoch_ratio_trend": classify_trend(per_epoch_ratio),  # scalar
     }
 
 
@@ -808,19 +840,21 @@ def reward_per_agent(rewards):
 
     # Flatten T, E → leave N separate
     # shape becomes (T*E, N)
-    flat = rewards.reshape(-1, rewards.shape[-1])
-
+    #flat = rewards.reshape(-1, rewards.shape[-1])
     # Per-agent stats
-    reward_per_agent_mean = flat.mean(axis=0)  # (N,)
-    reward_per_agent_std = flat.std(axis=0)  # (N,)
-    reward_per_agent_p10 = jnp.percentile(flat, 10, axis=0)
-    reward_per_agent_p50 = jnp.percentile(flat, 50, axis=0)
-    reward_per_agent_p90 = jnp.percentile(flat, 90, axis=0)
+    episode_mean = rewards.mean(axis=0)  # (E, N)
+    reward_per_agent_p10 = jnp.percentile(episode_mean, 10, axis=0)
+    reward_per_agent_p50 = jnp.percentile(episode_mean, 50, axis=0)
+    reward_per_agent_p90 = jnp.percentile(episode_mean, 90, axis=0)
+
+    reward_per_agent_mean = episode_mean.mean(axis=0)  # (N,)
+    reward_per_agent_std = episode_mean.std(axis=0)  # (N,)
 
     # Trend per agent: compare first timestep vs last timestep
     # mean over E → (T, N)
-    per_timestep_per_agent = rewards.mean(axis=1)  # (T, N)
-    reward_per_agent_trend = per_timestep_per_agent[-1] - per_timestep_per_agent[0]
+    #per_timestep_per_agent = rewards.mean(axis=1)  # (T, N)
+    reward_per_agent_trend = episode_mean[-1] - episode_mean[0]
+
 
     return {
         # "rewards_raw": rewards,                             # (T, E, N)
@@ -859,13 +893,6 @@ def team_success_rate(str, deliv_t):
         if str == "mean"
         else jnp.all((deliv_t.sum(axis=0) > 0), axis=-1).std()
     )
-
-
-# for returns,
-def per_agent(str, x):
-    return (
-        x.sum(axis=0).mean(axis=0) if str == "mean" else x.sum(axis=0).std(axis=0)
-    )  # [N]
 
 
 # for x.shape [T,...] only
@@ -911,11 +938,25 @@ def bootstrap_ci(x, n_boot=2000, alpha=0.05, key=None):
 
 
 def empirical_cdf(x, grid=None):
+    # remove overflow values
+    maxf = jnp.finfo(jnp.float32).max
+    x = x[x < maxf * 0.99]
+
+    # sort values
     flat = jnp.sort(x.reshape(-1))
+
+    # if no grid provided → use flat
     if grid is None:
         grid = flat
+    else:
+        # clean grid too
+        grid = grid[grid < maxf * 0.99]
+
+    # compute CDF
     cdf = jnp.searchsorted(flat, grid, side="right") / flat.size
+
     return grid, cdf
+
 
 
 def time_to_completion(deliv):
@@ -1009,7 +1050,7 @@ def additional_metrics(delivet_t):
         "time_to_first_delivery_p50": ttfd_p50,
         "time_to_first_delivery_p90": ttfd_p90,
         "time_to_first_delivery_bootstrap_CI_on_lower_bound_of_median": ttfd_ci[0],
-        "time_to_first_delivery_bootstrap_CI_on_upper_bound_bound_of_median": ttfd_ci[
+        "time_to_first_delivery_bootstrap_CI_on_upper_bound_of_median": ttfd_ci[
             1
         ],
         **flat_arr_to_metric(ttfd_grid, "time_to_first_delivery_cdf_grid"),
@@ -1019,7 +1060,7 @@ def additional_metrics(delivet_t):
         "time_to_completion_p50": ttc_p50,
         "time_to_completion_p90": ttc_p90,
         "time_to_completion_bootstrap_CI_on_lower_bound_of_median": ttc_ci[0],
-        "time_to_completion_bootstrap_CI_on_upper_bound_bound_of_median": ttc_ci[1],
+        "time_to_completion_bootstrap_CI_on_upper_bound_of_median": ttc_ci[1],
         **flat_arr_to_metric(ttc_grid, "time_to_completion_cdf_grid"),
         **flat_arr_to_metric(ttc_cdf, "time_to_completion_cdf"),
     }
@@ -1050,12 +1091,11 @@ def per_agent_dict(dict: Dict | jnp.ndarray, dictKey: Optional[str] = None):
                 per_agent_metrics[new_key] = agent_v
         return per_agent_metrics
     else:
+        if dictKey is None:
+                raise ValueError("Need to include dictKey in per_agent_dict() args")
         per_agent_metrics = {}
         for i, agent_v in enumerate(dict):
-            if dictKey is None:
-                ValueError("Need to include dictKey in per_agent_dict() args")
-                exit(0)
-            elif "per_agent" in dictKey:
+            if "per_agent" in dictKey:
                 new_key = dictKey.replace("per_agent", f"agent_{i}")
             else:
                 new_key = dictKey + f"_agent_{i}"
@@ -1069,7 +1109,7 @@ def flat_action_histogram(action_histogram: jnp.ndarray):
     row = {}
     for n in range(N):  # (N, num_bins)
         for b in range(num_bins):
-            row[f"action_histogram_flat_a{n}_b{b}"] = action_histogram[n, b]
+            row[f"action_histogram_flat_agent_{n}_b{b}"] = action_histogram[n, b]
     return row
 
 
@@ -1078,17 +1118,17 @@ def flat_action_jsd_metric(jsd_metric: jnp.ndarray):
     row = {}
     for i in range(N):  # (N, N)
         for j in range(N):
-            row[f"jsd_a{i}_a{j}"] = jsd_metric[i, j]
+            row[f"action_jsd_a{i}_a{j}"] = jsd_metric[i, j]
     return row
 
 
 def flat_fairness_metrics_lorenz_y(lorenz: jnp.ndarray, key: str):
     E = lorenz.shape[0]
-    N = lorenz.shape[0]
+    N = lorenz.shape[1]
     row = {}
     for e in range(E):
         for n in range(N):
-            row[f"{key}_e{e}_a{n}"] = lorenz[e, n]
+            row[f"{key}_agent_{n}_e{e}"] = lorenz[e, n]
     return row
 
 def create_dummy_metrics(
@@ -1166,6 +1206,9 @@ def create_dummy_metrics(
         (U, P, T, E, N),
     )
     epoch_values_tensor_raw = jnp.ones(
+        (U, P, T, E, N),
+    )
+    epoch_returns_tensor_raw = jnp.ones(
         (U, P, T, E, N),
     )
     epoch_grads_tensor_raw = {

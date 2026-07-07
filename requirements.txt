@@ -4,6 +4,3 @@ jax==0.10.0
 requests==2.33.1
 optax==0.2.8
 pytest==9.0.3
-
-pandas==3.0.3
-matplotlib==3.10.9

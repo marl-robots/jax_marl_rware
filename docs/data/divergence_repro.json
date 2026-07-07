@@ -1,0 +1,30 @@
+{
+ "jumanji": {
+  "convoy_follower_id0_terminates": true,
+  "convoy_follower_id1_terminates": false,
+  "contention_terminates": true,
+  "contention_same_cell": true,
+  "random_policy": {
+   "episodes": 512,
+   "time_limit": 500,
+   "terminated_early_frac": 0.984375,
+   "median_length": 57.5,
+   "mean_length": 99.302734375,
+   "p90_length": 256.9000000000004
+  }
+ },
+ "rware": {
+  "convoy_follower_id0_terminates": false,
+  "convoy_follower_id0_both_moved": true,
+  "convoy_follower_id1_terminates": false,
+  "convoy_follower_id1_both_moved": true,
+  "contention_terminates": false,
+  "contention_nobody_moved": false,
+  "random_policy": {
+   "episodes": 50,
+   "time_limit": 500,
+   "terminated_early_frac": 0.0,
+   "median_length": 500.0
+  }
+ }
+}

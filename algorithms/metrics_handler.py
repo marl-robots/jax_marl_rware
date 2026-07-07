@@ -1,27 +1,12 @@
 import math
-import jax.numpy as jnp
 
-import algorithms.metrics_funcs as funcs
+import jax.numpy as jnp
 import numpy as np
 
-from flax import serialization
-import json
-import os
-def load_metrics(path):
-    tensors_path=os.path.join(path,"metrics_tensors.msgpack")
-    template_path=os.path.join(path,"metrics_template.json")
-    with open(tensors_path, "rb") as f:
-        raw = f.read()
-    with open(template_path, "r") as f:
-        metrics_template = json.load(f)
+import algorithms.metrics_funcs as funcs
 
-    metrics_loaded = serialization.from_bytes(metrics_template, raw)
-    return metrics_loaded
-second_time=False
-def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
-    if path is not None:
-        metrics_loaded = load_metrics(path)
-        raw = metrics_loaded
+
+def process_raw(raw: dict, upd: int, batch_steps: int, actionDim: int):
     """
     T=env time_limit
     E= paralle envs
@@ -63,6 +48,7 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
         epoch_entropy_tensor_raw shape:(U, P, T, E, N)
         epoch_logp_tensor_raw shape:(U, P, T, E, N)
         epoch_values_tensor_raw shape:(U, P, T, E, N)
+        epoch_returns_tensor_raw shape:(U, P, T, E, N)
     epoch_grads_tensor(gradients dict)
     U=updates P=ppo_epoch H0,H1=hiddens layers A=action space O=observation space N=num agents
     HD=net out heads count
@@ -124,6 +110,7 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
     epoch_old_logp_tensor_raw = jnp.array(raw["epoch_old_logp_tensor_raw"])
     epoch_value_loss_tensor_raw = jnp.array(raw["epoch_value_loss_tensor_raw"])
     epoch_values_tensor_raw = jnp.array(raw["epoch_values_tensor_raw"])
+    epoch_returns_tensor_raw = jnp.array(raw["epoch_returns_tensor_raw"])
     epoch_grads_dict_raw = dict(raw["epoch_grads_tensor_raw"])
     idle_tensor_raw = jnp.array(raw["idle_tensor_raw"])
     pickup_tensor_raw = jnp.array(raw["pickup_tensor_raw"])
@@ -143,27 +130,33 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
     # [t1-(t2-1),E,N,]
     # [t2-(T-1),E,N,]
     t1, t2 = T // 3, 2 * (T // 3)
-
-    # funcs.plot_action_histogram_bar(action_distribution_metrics["action_histogram"])
-    # funcs.plot_action_histogram_line(action_distribution_metrics["action_histogram"])
-    # funcs.plot_action_entropy( action_distribution_metrics["action_entropy_per_agent"])
-    # funcs.plot_jsd_matrix(action_distribution_metrics["action_jsd_matrix"])
     flatten_grads_dict = funcs.extract_flat_grads(epoch_grads_dict_raw)
-    #for k,v in flatten_grads_dict.items():
-    #    print (k,type(v),v.shape)
-    #global second_time
-    #if second_time:
-    #    print("This runs from the second time onward")
-    #    exit(0)
-    #else:
-    #    second_time = True
-    logger_metrics_list:list[dict[str,float]] = []
+
+    logger_metrics_list: list[dict[str, float]] = []
     for i in range(U):
 
         deliveries_fairness_metrics = funcs.fairness_metrics(deliveries_tensor_raw[i])
         rewards_fairness_metrics = funcs.fairness_metrics(rewards_tensor_raw[i])
 
         loss_stats = funcs.loss_stats(epoch_loss_tensor_raw[i])
+
+        returns_stats = funcs.returns_stats(epoch_returns_tensor_raw[i])
+        returns_stats_metrics = {
+            **funcs.per_agent_dict(
+                returns_stats["returns_per_agent_mean"],  # [N]
+                "returns_per_agent_mean",
+            ),
+            **funcs.per_agent_dict(
+                returns_stats["returns_per_agent_std"],  # [N]
+                "returns_per_agent_std",
+            ),
+            "returns_mean": returns_stats["returns_mean"],
+            "returns_std": returns_stats["returns_std"],
+            "returns_percentile_stats_p10": returns_stats["returns_p10"],
+            "returns_percentile_stats_p50": returns_stats["returns_p50"],
+            "returns_percentile_stats_p90": returns_stats["returns_p90"],
+            "returns_skew": returns_stats["returns_skew"],
+        }
 
         kl_m = funcs.kl_divergence(
             epoch_old_logp_tensor_raw[i], epoch_logp_tensor_raw[i]
@@ -183,7 +176,6 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
                 per_agent_gna_metric[k + "_std"] = v.std()
             else:
                 per_agent_gna_metric[k] = v
-
 
         rware_metric = funcs.rware_metric(
             rewards_tensor_raw[i], deliveries_tensor_raw[i]
@@ -242,7 +234,9 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
             "grad_norms_per_agent_mean": gna["grad_norms_per_agent_mean"].mean(),
             "grad_norms_per_agent_std": gna["grad_norms_per_agent_std"].std(),
             "grad_norms_per_agent_p90_mean": gna["grad_norms_per_agent_p90"].mean(),
-            "grad_norms_per_agent_p90_median": jnp.median(gna["grad_norms_per_agent_p90"]),
+            "grad_norms_per_agent_p90_median": jnp.median(
+                gna["grad_norms_per_agent_p90"]
+            ),
             "grad_norms_per_agent_p90_max": gna["grad_norms_per_agent_p90"].max(),
             "grad_norm_mean": gn["grad_norm_mean"],
             "grad_norm_std": gn["grad_norm_std"],
@@ -277,45 +271,28 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
             "advantage_skew": advantage_stats["advantage_skew"],
         }
         actor_loss_vs_critic_loss_metrics = {
-            "per_epoch_ratio_mean": analyze_update["per_epoch_ratio"].mean(),  # (P,)
-            "per_epoch_ratio_std": analyze_update["per_epoch_ratio"].std(),  # (P,)
+            "actor_loss_mean": analyze_update["actor_loss_per_epoch"].mean(),  # (P,)
+            "actor_loss_std": analyze_update["actor_loss_per_epoch"].std(),  # (P,)
+            "actor_loss_trend": analyze_update["actor_loss_trend"],  # scalar
+            "value_loss_mean": analyze_update["critic_loss_per_epoch"].mean(),  # (P,)
+            "value_loss_std": analyze_update["critic_loss_per_epoch"].std(),  # (P,)
+            "value_loss_trend": analyze_update["critic_loss_trend"],  # scalar
+            "ratio_mean": analyze_update["per_epoch_ratio"].mean(),  # (P,)
+            "ratio_std": analyze_update["per_epoch_ratio"].std(),  # (P,)
+            "ratio_trend": analyze_update["per_epoch_ratio_trend"],  # scalar
             "cumulative_ratio_mean": analyze_update["cumulative_ratio"].mean(),  # (P,)
             "cumulative_ratio_std": analyze_update["cumulative_ratio"].std(),  # (P,)
-            "value_loss_per_epoch_mean": analyze_update[
-                "critic_loss_per_epoch"
-            ].mean(),  # (P,)
-            "value_loss_per_epoch_std": analyze_update[
-                "critic_loss_per_epoch"
-            ].std(),  # (P,)
-            "actor_loss_per_epoch_mean": analyze_update[
-                "actor_loss_per_epoch"
-            ].mean(),  # (P,)
-            "actor_loss_per_epoch_std": analyze_update[
-                "actor_loss_per_epoch"
-            ].std(),  # (P,)
-            "entropy_per_epoch_mean": analyze_update[
-                "entropy_per_epoch"
-            ].mean(),  # (P,)
-            "entropy_per_epoch_std": analyze_update["entropy_per_epoch"].std(),  # (P,)
+            "UTD": analyze_update["UTD"],  # scalar
             "q_value_magnitude_mean": analyze_update[
                 "q_value_magnitude"
             ].mean(),  # (P,)
             "q_value_magnitude_std": analyze_update["q_value_magnitude"].std(),  # (P,)
-            "UTD": analyze_update["UTD"],  # scalar
-            "value_loss_trend": analyze_update["critic_loss_trend"],  # scalar
-            "actor_loss_trend": analyze_update["actor_loss_trend"],  # scalar
-            "entropy_trend": analyze_update["entropy_trend"],  # scalar
             "q_value_trend": analyze_update["q_value_trend"],  # scalar
-            "ratio_trend": analyze_update["ratio_trend"],  # scalar
         }
 
         episode_metrics_std = {
-            "episode_return_std": funcs.team_per_ep("std", rewards_tensor_raw[i]),
-            # [ppo num_epoch,] if a2c [1,]
-            # "entropy_std": epoch_entropy_tensor_raw[i].std(),
+            "episode_returns_std": funcs.team_per_ep("std", rewards_tensor_raw[i]),
             "loss_std": loss_stats["loss_std"],
-            # "actor_loss_std": epoch_actor_loss_tensor_raw[i].std(),
-            # "value_loss_std": epoch_value_loss_tensor_raw[i].std(),
             "reward_std_std": rewards_std_tensor_raw[i].std(),
             "deliveries_std": funcs.team_per_ep("std", deliveries_tensor_raw[i]),
             "block_rate_std": funcs.frac("std", block_tensor_raw[i]),
@@ -365,12 +342,8 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
 
         episode_metrics_mean = {
             "episode_time": episode_time[i],
-            "episode_return_mean": funcs.team_per_ep("mean", rewards_tensor_raw[i]),
-            # [ppo num_epoch,] if a2c [1,]
-            # "entropy": epoch_entropy_tensor_raw[i].mean(),
+            "episode_returns_mean": funcs.team_per_ep("mean", rewards_tensor_raw[i]),
             "loss_mean": loss_stats["loss_mean"],
-            # "actor_loss": epoch_actor_loss_tensor_raw[i].mean(),
-            # "value_loss": epoch_value_loss_tensor_raw[i].mean(),
             "reward_std_mean": rewards_std_tensor_raw[i].mean(),
             "deliveries_mean": funcs.team_per_ep("mean", deliveries_tensor_raw[i]),
             "block_rate_mean": funcs.frac("mean", block_tensor_raw[i]),
@@ -382,14 +355,16 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
             "deliveries_mid_mean": funcs.team_per_ep(
                 "mean", deliveries_tensor_raw[i][t1:t2]
             ),
-            "deliveries_late_mean": funcs.team_per_ep("mean", deliveries_tensor_raw[i][t2:]),
+            "deliveries_late_mean": funcs.team_per_ep(
+                "mean", deliveries_tensor_raw[i][t2:]
+            ),
             "block_early_mean": funcs.frac("mean", block_tensor_raw[i][:t1]),
             "block_mid_mean": funcs.frac("mean", block_tensor_raw[i][t1:t2]),
             "block_late_mean": funcs.frac("mean", block_tensor_raw[i][t2:]),
             "distance_traveled_mean": funcs.team_per_ep(
                 "mean", distance_traveled_tensor_raw[i]
             ),
-            "step_time": funcs.E_per_T("mean", step_time_tensor_raw[i]),
+            "step_time_mean": funcs.E_per_T("mean", step_time_tensor_raw[i]),
             "step_count_mean": step_count_tensor_raw[i].mean(),  # [E,]
             "success_mean": funcs.num_successful("mean", deliveries_tensor_raw[i]),
             "success_rate_mean": funcs.team_success_rate(
@@ -399,9 +374,6 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
             "FPS_mean": (step_count_tensor_raw[i] / (step_time_tensor_raw[i] + 1e-12))
             .mean(axis=0)
             .mean(),
-            "returns_percentile_stats_p10": ret_ep_p10,
-            "returns_percentile_stats_p50": ret_ep_p50,
-            "returns_percentile_stats_p90": ret_ep_p90,
             "step_time_percentile_stats_p10": step_time_ep_p10,
             "step_time_percentile_stats_p50": step_time_ep_p50,
             "step_time_percentile_stats_p90": step_time_ep_p90,
@@ -450,8 +422,8 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
         env_steps = done_count * batch_steps
 
         metrics = {
-            "environment_steps":env_steps,
-            "updates":done_count,
+            "environment_steps": env_steps,
+            "updates": done_count,
             **episode_metrics_mean,
             **episode_metrics_std,
             **add_metrics_mean,
@@ -471,6 +443,7 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
             **reward_per_agent_metrics,
             **action_distribution_metrics,
             **per_agent_distance_traveled_metric,
+            **returns_stats_metrics,
         }
 
         only_floats_metrics = {}
@@ -496,27 +469,8 @@ def process_raw(raw: dict, upd:int, batch_steps:int,actionDim:int,path=None):
         # all per-update metrics for this chunk, as np arrays of shape [k]
         m = {key: np.asarray(val) for key, val in only_floats_metrics.items()}
         m = {key: float(val) for key, val in m.items()}
-        m["updates"]=int(m["updates"])
-        m["environment_steps"]=int(m["environment_steps"])
- 
- 
+        m["updates"] = int(m["updates"])
+        m["environment_steps"] = int(m["environment_steps"])
+
         logger_metrics_list.append(m)
     return logger_metrics_list
-
-def run_from_save():
-    root_path=os.path.join("runs","2026_06_23_20_01_02")
-    paths=[
-            "ia2c_Warehouse_tiny-4ag",
-            "ippo_Warehouse_tiny-4ag",
-            "maa2c_Warehouse_tiny-4ag",
-            "mappo_Warehouse_tiny-4ag",
-        ]
-
-    for path in paths:
-        path_i=os.path.join(root_path,path)
-        try:
-            process_raw({},100,1000,5,path_i)
-            print(path,"is succses")
-        except:
-            print(path,"is fail")
-            continue

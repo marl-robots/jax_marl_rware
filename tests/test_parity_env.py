@@ -39,7 +39,7 @@ def _orig_state_to_jax(env, wh):
 
     return EnvState(
         agent_x=agent_x, agent_y=agent_y, agent_dir=agent_dir,
-        agent_carrying=carrying, agent_has_delivered=jnp.zeros((N,), bool),
+        agent_carrying=carrying,agent_distance_traveled=jnp.zeros((N,), jnp.int32), agent_has_delivered=jnp.zeros((N,), bool),
         shelf_x=shelf_x, shelf_y=shelf_y, in_queue=jnp.array(in_queue),
         step_count=jnp.array(0, jnp.int32), inactive_count=jnp.array(0, jnp.int32),
         key=jax.random.PRNGKey(0),

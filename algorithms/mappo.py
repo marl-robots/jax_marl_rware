@@ -26,14 +26,25 @@ import jax.numpy as jnp
 import optax
 from jax.experimental import io_callback
 
-from jaxrware import Warehouse, make_config
+from jaxrware import make_config, Warehouse
+
 from .config import MAPPOConfig
 from .networks import ActorRNN, CriticRNN, ScannedGRU
 from .returns import compute_nstep_returns
 
 
-def ppo_losses(returns, values, logp, old_logp, entropy, *,
-               ppo_clip, entropy_coef, value_loss_coef, filled=None):
+def ppo_losses(
+    returns,
+    values,
+    logp,
+    old_logp,
+    entropy,
+    *,
+    ppo_clip,
+    entropy_coef,
+    value_loss_coef,
+    filled=None,
+):
     """Pure PPO loss math, shaped [..., N] over the agent axis.
 
     Transcribes marlbase ac/model.py:PPONetwork.update exactly:
@@ -45,7 +56,7 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
     `old_logp` are treated as constants (caller detaches them).
     """
     advantage = returns - values
-    value_loss_t = (advantage ** 2).sum(-1)
+    value_loss_t = (advantage**2).sum(-1)
 
     adv = jax.lax.stop_gradient(advantage)
     ratio = jnp.exp(logp - old_logp)
@@ -62,12 +73,23 @@ def ppo_losses(returns, values, logp, old_logp, entropy, *,
         actor_loss = (actor_loss_t * filled).sum() / denom
 
     loss = actor_loss + value_loss_coef * value_loss
-    return loss, (actor_loss,value_loss,entropy.mean(),actor_loss_t, value_loss_t, entropy,advantage,values,logp)
+    return loss, (
+        actor_loss,
+        value_loss,
+        entropy.mean(),
+        actor_loss_t,
+        value_loss_t,
+        entropy,
+        advantage,
+        values,
+        logp,
+        returns,
+    )
 
 
-
-def a2c_losses(returns, values, logp, entropy, *,
-               entropy_coef, value_loss_coef, filled=None):
+def a2c_losses(
+    returns, values, logp, entropy, *, entropy_coef, value_loss_coef, filled=None
+):
     """Pure A2C loss math, shaped [..., N] over the agent axis.
 
     Transcribes marlbase ac/model.py:A2CNetwork.update exactly:
@@ -80,7 +102,7 @@ def a2c_losses(returns, values, logp, entropy, *,
     PPO there is no ratio/clip and no old_logp snapshot — a single grad step.
     """
     advantage = returns - values
-    value_loss_t = (advantage ** 2).sum(-1)
+    value_loss_t = (advantage**2).sum(-1)
     adv = jax.lax.stop_gradient(advantage)
     actor_loss_t = -(logp * adv).sum(-1) - entropy_coef * entropy.sum(-1)
 
@@ -92,10 +114,20 @@ def a2c_losses(returns, values, logp, entropy, *,
         value_loss = (value_loss_t * filled).sum() / denom
         actor_loss = (actor_loss_t * filled).sum() / denom
 
-
     loss = actor_loss + value_loss_coef * value_loss
 
-    return loss, (actor_loss,value_loss,entropy.mean(),actor_loss_t, value_loss_t, entropy,advantage,values,logp)
+    return loss, (
+        actor_loss,
+        value_loss,
+        entropy.mean(),
+        actor_loss_t,
+        value_loss_t,
+        entropy,
+        advantage,
+        values,
+        logp,
+        returns,
+    )
 
 
 def _welford_standardise(state, reward):
@@ -154,7 +186,9 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     # ---- target-critic returns (detached) ----
     _, v_target = critic.apply(target_critic, h0(), (central_T, gru_resets))
     v_target = v_target.reshape(T, E, N)
-    returns = compute_nstep_returns(rstd_TEN, dones_TEN, v_target, cfg.n_steps, cfg.gamma)
+    returns = compute_nstep_returns(
+        rstd_TEN, dones_TEN, v_target, cfg.n_steps, cfg.gamma
+    )
     returns = jax.lax.stop_gradient(returns)
 
     # ---- snapshot old log-probs from current actor ----
@@ -170,13 +204,22 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         values = values.reshape(T, E, N)
         if cfg.use_ppo:
             return ppo_losses(
-                returns, values, logp, old_logp, entropy,
-                ppo_clip=cfg.ppo_clip, entropy_coef=cfg.entropy_coef,
+                returns,
+                values,
+                logp,
+                old_logp,
+                entropy,
+                ppo_clip=cfg.ppo_clip,
+                entropy_coef=cfg.entropy_coef,
                 value_loss_coef=cfg.value_loss_coef,
             )
         return a2c_losses(
-            returns, values, logp, entropy,
-            entropy_coef=cfg.entropy_coef, value_loss_coef=cfg.value_loss_coef,
+            returns,
+            values,
+            logp,
+            entropy,
+            entropy_coef=cfg.entropy_coef,
+            value_loss_coef=cfg.value_loss_coef,
         )
 
     def epoch(carry, _):
@@ -184,7 +227,7 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         (loss, aux_tensors), grads = jax.value_and_grad(loss_fn, has_aux=True)(params)
         updates, opt_state = tx.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
-        return (params, opt_state), (loss, *aux_tensors,grads)
+        return (params, opt_state), (loss, *aux_tensors, grads)
 
     # PPO: num_epochs passes over the batch; A2C: a single grad step.
     n_epochs = cfg.num_epochs if cfg.use_ppo else 1
@@ -205,7 +248,6 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         "epoch_actor_loss": epoch_tensors[1],
         "epoch_value_loss": epoch_tensors[2],
         "epoch_entropy": epoch_tensors[3],
-
         "epoch_loss_tensor": epoch_tensors[0],
         "epoch_actor_loss_tensor": epoch_tensors[4],
         "epoch_value_loss_tensor": epoch_tensors[5],
@@ -213,20 +255,24 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         "epoch_advantage_tensor": epoch_tensors[7],
         "epoch_values_tensor": epoch_tensors[8],
         "epoch_logp_tensor": epoch_tensors[9],
-        "epoch_grads_tensor": epoch_tensors[10],
+        "epoch_returns_tensor": epoch_tensors[10],
+        "epoch_grads_tensor": epoch_tensors[11],
     }
     return params, target_critic, opt_state, diagnostics
 
 
-def _host_log(n_updates,upd, ret, ent, deliveries, block_rate, idle_rate):
+def _host_log(n_updates, upd, ret, ent, deliveries, block_rate, idle_rate):
     """Host-side live print, fired once per update via io_callback (cheap).
 
     Shows the behavioral view used for watching progress: team return,
     deliveries/episode, forward-block (contention) %, idle %, and entropy
     (watch entropy — a fast drop toward 0 means exploration collapse)."""
-    print(f"  upd {int(upd):4d}/{int(n_updates):4d} | return {float(ret):8.3f} | "
-          f"deliv {float(deliveries):6.2f} | blocked {float(block_rate) * 100:4.1f}% | "
-          f"idle {float(idle_rate) * 100:4.1f}% | ent {float(ent):5.3f}", flush=True)
+    print(
+        f"  upd {int(upd):4d}/{int(n_updates):4d} | return {float(ret):8.3f} | "
+        f"deliv {float(deliveries):6.2f} | blocked {float(block_rate) * 100:4.1f}% | "
+        f"idle {float(idle_rate) * 100:4.1f}% | ent {float(ent):5.3f}",
+        flush=True,
+    )
 
 
 def _setup(cfg: MAPPOConfig, live_log: bool = False):
@@ -256,7 +302,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     H = cfg.hidden_dim
 
     actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain, cfg.use_rnn)
-    
+
     critic = CriticRNN(H, cfg.orthogonal_gain, cfg.use_rnn)
     tx = optax.adam(cfg.lr)  # grad_clip=false in the proven config
 
@@ -277,21 +323,29 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     def init_carry(key):
         key, ka, kc = jax.random.split(key, 3)
         actor_params = actor.init(ka, h0(), (jnp.zeros((1, B, obs_dim)), zeros_BT(1)))
-        critic_params = critic.init(kc, h0(), (jnp.zeros((1, B, critic_dim)), zeros_BT(1)))
+        critic_params = critic.init(
+            kc, h0(), (jnp.zeros((1, B, critic_dim)), zeros_BT(1))
+        )
         params = {"actor": actor_params, "critic": critic_params}
         target_critic = critic_params
         opt_state = tx.init(params)
-        welford = (jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.zeros((E, N)), jnp.array(0.0))
+        welford = (
+            jnp.zeros((E, N)),
+            jnp.zeros((E, N)),
+            jnp.zeros((E, N)),
+            jnp.array(0.0),
+        )
         return (params, target_critic, opt_state, welford, key)
 
     def update_step(carry, data):
         params, target_critic, opt_state, welford, key = carry
         key, kreset, krun = jax.random.split(key, 3)
-        upd_idx,n_updates=data
+        upd_idx, n_updates = data
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
         # ---- rollout: one full episode, hidden starts at zeros ----
         episode_start_time = time.time()
+
         def rollout_step(rc, _):
             states, obs, h_actor, welford, key = rc
             key, ksamp = jax.random.split(key)
@@ -299,21 +353,47 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             h_actor, dist = actor.apply(
                 params["actor"], h_actor, (obs_flat[None], zeros_BT(1))
             )
-            actions_flat = jax.random.categorical(ksamp, dist.logits[0])  # [B] # pyright: ignore[reportAttributeAccessIssue] 
+            actions_flat = jax.random.categorical(
+                ksamp, dist.logits[0]  # pyright: ignore[reportAttributeAccessIssue]
+            )  # [B]
             actions = actions_flat.reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
             welford, rstd = _welford_standardise(welford, rewards)
-            sig = (info["deliveries"], info["forward_blocked"],
-                   info["noop"], info["pickup"], info["drop"],info["distance_traveled"],info["step_time"])  # each [E,N]
-            return (nstates, nobs, h_actor, welford, key), (obs, actions, rstd, rewards, *sig)
+            sig = (
+                info["deliveries"],
+                info["forward_blocked"],
+                info["noop"],
+                info["pickup"],
+                info["drop"],
+                info["distance_traveled"],
+                info["step_time"],
+            )  # each [E,N]
+            return (nstates, nobs, h_actor, welford, key), (
+                obs,
+                actions,
+                rstd,
+                rewards,
+                *sig,
+            )
 
         init = (states, obs, h0(), welford, krun)
-        (states, nobs, _,welford, _), traj = jax.lax.scan(
+        (states, *_unused, welford, _), traj = jax.lax.scan(
             rollout_step, init, None, length=T
         )
 
-        (obs_t, act_t, rstd_t, rraw_t,
-         deliv_t, blocked_t, noop_t, pickup_t, drop_t,distance_traveled_t,step_time_t) = traj  # [T,E,N,*]
+        (
+            obs_t,
+            act_t,
+            rstd_t,
+            rraw_t,
+            deliv_t,
+            blocked_t,
+            noop_t,
+            pickup_t,
+            drop_t,
+            distance_traveled_t,
+            step_time_t,
+        ) = traj  # [T,E,N,*]
 
         batch = {
             "obs_flat_T": obs_t.reshape(T, B, obs_dim),
@@ -325,33 +405,34 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         params, target_critic, opt_state, diag = mappo_update(
             actor, critic, tx, cfg, params, target_critic, opt_state, batch
         )
-        
-        episode_end_time=time.time()
-        delta_time=(episode_end_time-episode_start_time)
-        
-        metrics_tensors={
-        "episode_time": delta_time,
-        "rewards_tensor_raw":rraw_t,
-        "actions_tensor_raw":act_t,
-        "observation_tensor_raw":obs_t,
-        "epoch_returns_tensor_raw": diag["returns"],
-        "epoch_old_logp_tensor_raw": diag["old_logp"],
-        "epoch_entropy_tensor_raw": diag["epoch_entropy_tensor"],
-        "epoch_loss_tensor_raw": diag["epoch_loss_tensor"],
-        "epoch_actor_loss_tensor_raw": diag["epoch_actor_loss_tensor"],
-        "epoch_value_loss_tensor_raw": diag["epoch_value_loss_tensor"],
-        "epoch_advantage_tensor_raw": diag["epoch_advantage_tensor"],
-        "epoch_values_tensor_raw": diag["epoch_values_tensor"],
-        "epoch_logp_tensor_raw": diag["epoch_logp_tensor"],
-        "epoch_grads_tensor_raw":diag["epoch_grads_tensor"],
-        "rewards_std_tensor_raw": rstd_t,
-        "deliveries_tensor_raw": deliv_t,          
-        "block_tensor_raw": blocked_t,               
-        "idle_tensor_raw": noop_t,
-        "pickup_tensor_raw": pickup_t,
-        "distance_traveled_tensor_raw": distance_traveled_t,
-        "step_time_tensor_raw": step_time_t,#[T,E]
-        "step_count_tensor_raw": states.step_count,#[E,]
+
+        episode_end_time = time.time()
+        delta_time = episode_end_time - episode_start_time
+
+        metrics_tensors = {
+            "episode_time": delta_time,
+            "rewards_tensor_raw": rraw_t,
+            "actions_tensor_raw": act_t,
+            "observation_tensor_raw": obs_t,
+            "epoch_returns_tensor_raw": diag["returns"],
+            "epoch_old_logp_tensor_raw": diag["old_logp"],
+            "epoch_entropy_tensor_raw": diag["epoch_entropy_tensor"],
+            "epoch_loss_tensor_raw": diag["epoch_loss_tensor"],
+            "epoch_actor_loss_tensor_raw": diag["epoch_actor_loss_tensor"],
+            "epoch_value_loss_tensor_raw": diag["epoch_value_loss_tensor"],
+            "epoch_advantage_tensor_raw": diag["epoch_advantage_tensor"],
+            "epoch_values_tensor_raw": diag["epoch_values_tensor"],
+            "epoch_logp_tensor_raw": diag["epoch_logp_tensor"],
+            "epoch_returns_tensor_raw": diag["epoch_returns_tensor"],
+            "epoch_grads_tensor_raw": diag["epoch_grads_tensor"],
+            "rewards_std_tensor_raw": rstd_t,
+            "deliveries_tensor_raw": deliv_t,
+            "block_tensor_raw": blocked_t,
+            "idle_tensor_raw": noop_t,
+            "pickup_tensor_raw": pickup_t,
+            "distance_traveled_tensor_raw": distance_traveled_t,
+            "step_time_tensor_raw": step_time_t,  # [T,E]
+            "step_count_tensor_raw": states.step_count,  # [E,]
         }
 
         # team episode return (sum over agents, mean over envs) to match
@@ -388,17 +469,25 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(
-                _host_log, None, n_updates,upd_idx, episode_metrics["episode_return"],
-                episode_metrics["entropy"], episode_metrics["deliveries"], episode_metrics["block_rate"],
-                episode_metrics["idle_rate"], ordered=False,
+                _host_log,
+                None,
+                n_updates,
+                upd_idx,
+                episode_metrics["episode_return"],
+                episode_metrics["entropy"],
+                episode_metrics["deliveries"],
+                episode_metrics["block_rate"],
+                episode_metrics["idle_rate"],
+                ordered=False,
             )
-        return carry, (metrics_tensors,episode_metrics)
+        return carry, (metrics_tensors, episode_metrics)
 
     return env, actor, critic, tx, init_carry, update_step
 
 
-def make_train(cfg: MAPPOConfig, num_updates: int | None = None,
-               live_log: bool = False):
+def make_train(
+    cfg: MAPPOConfig, num_updates: int | None = None, live_log: bool = False
+):
     """One-shot trainer: the whole run compiled as a single scan (no resume)."""
     env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
     n_updates = cfg.num_updates if num_updates is None else num_updates
@@ -432,13 +521,15 @@ def make_resumable_train(cfg: MAPPOConfig, live_log: bool = False):
     env, actor, critic, tx, init_carry, update_step = _setup(cfg, live_log)
 
     @functools.partial(jax.jit, static_argnums=(3,))
-    def train_from(carry,n_updates, base_upd, n):
+    def train_from(carry, n_updates, base_upd, n):
         idxs = base_upd + jnp.arange(n)
         total_updates = jnp.full((n,), n_updates)
-        xs=(idxs,total_updates)
-        carry, (metrics_tensors,episode_metrics) = jax.lax.scan(update_step, carry, xs, length=n)
+        xs = (idxs, total_updates)
+        carry, (metrics_tensors, episode_metrics) = jax.lax.scan(
+            update_step, carry, xs, length=n
+        )
 
-        return carry, (metrics_tensors,episode_metrics)
+        return carry, (metrics_tensors, episode_metrics)
 
     return {
         "env": env,
