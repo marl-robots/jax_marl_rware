@@ -79,3 +79,23 @@ python -m scripts.train_mappo_potential --parallel-envs 50 --total-steps 3000000
 Writes to a NEW run-dir (`runs/mappo_pot_*`) so its `results.csv` compares
 against `runs/mappo_tiny-4ag_seed2`. Knobs: `--phi-beta`, `--phi-epochs`,
 `--phi-lr`, `--phi-hidden`.
+
+## Replication update (2026-07-07, branch final-unified)
+
+The seed-2 A/B above was replicated on seeds 0 and 1 (identical config: 50
+envs, RNN, 1200 updates, matched β=0 controls). Findings:
+
+| seed | shaped takeoff | control takeoff | deliv @1200 shaped / control |
+|---|---|---|---|
+| 2 | ~u400 | not within budget | **7.1** / 1.0 |
+| 0 | ~u520 | ~u900 | 2.5 / **3.3** |
+| 1 | ~u500 | ~u600 | 3.4 / **4.8** |
+
+What replicates: **early, consistent ignition** of the shaped runs (~u400–520
+on all seeds) vs a high-variance control takeoff (u600 / u900 / >1200). What
+does not: the 7× final-score gap — where the control ignites, it catches up
+and can finish ahead. The honest claim is reduced takeoff variance, not higher
+performance; at n=3 even that is suggestive. Per-seed curves:
+`runs/mappo_pot{,0}_tiny-4ag_seed{0,1,2}`. (Training code was verified
+identical between the original branch and final-unified — this is seed
+variance, not code drift.)
