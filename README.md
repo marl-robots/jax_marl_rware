@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # jax_marl3 — Fast, faithful JAX port of RWARE + cooperative MARL baselines
 
 A fully-jitted [JAX](https://github.com/google/jax) re-implementation of the
