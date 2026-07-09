@@ -392,13 +392,13 @@ def main():
             stats = {
                 key: float(episode_metrics[key].mean())
                 for key in (  # [k,]
-                    "episode_return",
-                    "deliveries",
-                    "block_rate",
-                    "idle_rate",
-                    "deliveries_early",
-                    "deliveries_mid",
-                    "deliveries_late",
+                    "episode_returns_mean",
+                    "deliveries_mean",
+                    "block_rate_mean",
+                    "idle_rate_mean",
+                    "deliveries_early_mean",
+                    "deliveries_mid_mean",
+                    "deliveries_late_mean",
                 )
             }
             print(narrator.chunk(upd, stats), flush=True)
