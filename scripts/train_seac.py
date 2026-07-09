@@ -121,18 +121,25 @@ def main():
             ema = ret_i if ema is None else (
                 args.ema_decay * ema + (1.0 - args.ema_decay) * ret_i)
             logger.log({
-                "environment_steps": done_count * batch_steps,
-                "updates": done_count,
-                "mean_episode_returns": ret_i,
-                "entropy": float(m["entropy"][i]),
-                "loss": float(m["loss"][i]),
-                "actor_loss": float(m["actor_loss"][i]),
-                "value_loss": float(m["value_loss"][i]),
-                "reward_std_mean": float(m["reward_std_mean"][i]),
-                "deliveries": float(m["deliveries"][i]),
-                "block_rate": float(m["block_rate"][i]),
-                "idle_rate": float(m["idle_rate"][i]),
-            })
+                        "environment_steps": done_count * batch_steps,
+                        "updates": done_count,
+                        "episode_returns_mean": ret_i,
+                        "entropy_mean": float(m["entropy"][i]),
+                        "loss_mean": float(m["loss"][i]),
+                        "actor_loss_mean": float(m["actor_loss"][i]),
+                        "value_loss_mean": float(m["value_loss"][i]),
+                        "reward_std_mean": float(m["reward_std_mean"][i]),
+                        "deliveries_mean": float(m["deliveries"][i]),
+                        "block_rate_mean": float(m["block_rate"][i]),
+                        "idle_rate_mean": float(m["idle_rate"][i]),
+                        "pickup_rate_mean": float(m["pickup_rate"][i]),
+                        "deliveries_early_mean": float(m["deliveries_early"][i]),
+                        "deliveries_mid_mean": float(m["deliveries_mid"][i]),
+                        "deliveries_late_mean": float(m["deliveries_late"][i]),
+                        "block_early_mean": float(m["block_early"][i]),
+                        "block_mid_mean": float(m["block_mid"][i]),
+                        "block_late_mean": float(m["block_late"][i]),
+                    })
         upd += k
         mgr.save(upd, carry, smoothed_return=ema)
 
