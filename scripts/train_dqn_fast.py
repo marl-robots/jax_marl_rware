@@ -38,7 +38,7 @@ def main():
     ap.add_argument(
         "--algo",
         default="iql-emax",
-        choices=["iql", "iql-emax" "qmix", "vdn"],
+        choices=["iql", "iql-emax", "qmix", "vdn"],
         help="pick one Off-Policy-family algorithms",
     )
     ap.add_argument("--size", default="tiny")
