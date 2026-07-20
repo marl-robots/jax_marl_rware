@@ -32,6 +32,8 @@ from jaxrware.config import Action
 
 
 def main():
+    init_start=time.perf_counter()
+
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--algo",
@@ -43,17 +45,17 @@ def main():
     ap.add_argument("--n-agents", type=int, default=4)
     ap.add_argument("--difficulty", default="normal")
     ap.add_argument("--time-limit", type=int, default=500)
-    ap.add_argument("--parallel-envs", type=int, default=2)
+    ap.add_argument("--parallel-envs", type=int, default=1)
     ap.add_argument("--lr", type=float, default=5e-4)
     ap.add_argument("--seed", type=int, default=2)
     ap.add_argument(
         "--iters",
         type=int,
-        default=50,
+        default=800,
         help="collection iterations (each = parallel_envs episodes)",
     )
-    ap.add_argument("--buffer-size", type=int, default=100)
-    ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--buffer-size", type=int, default=1000)
+    ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--ensemble-size", type=int, default=5)
     ap.add_argument("--ucb-beta", type=float, default=1.0)
     ap.add_argument(
@@ -93,7 +95,7 @@ def main():
     ap.add_argument(
         "--checkpoint-every",
         type=int,
-        default=10,
+        default=50,
         help="iters per chunk = save cadence (pick a divisor of iters)",
     )
     ap.add_argument(
@@ -227,19 +229,18 @@ def main():
     A = len(Action)
     N = cfg.n_agents
     use_full_metrics = args.full_metrics
-    block_processor = None
-    if args.full_metrics:
-        logger = init_Asylogger(csv_path, E, N, A, use_full_metrics, resume, True)
+    block_processor=None
+    if use_full_metrics:
+        logger = init_Asylogger(csv_path, E, N, A, use_full_metrics, resume,True)
     else:
-        logger = CSVLogger(csv_path, resume, True)
-    block_processor = BlockProcessor(logger)
-
+        logger = CSVLogger(csv_path, resume,True)
     if start >= iters:
         print(f"nothing to do: start={start} >= iters={iters}")
-        logger.close()
-        block_processor.close()
+        log=logger.result() if not isinstance(logger,CSVLogger) else logger
+        log.close()
         mgr.wait()
         return
+    block_processor = BlockProcessor(logger)
 
     if not args.no_live_log:
         print(
@@ -295,6 +296,8 @@ def main():
     ema = None
     t0 = time.perf_counter()
     it = start
+    init_end=time.perf_counter()
+    print("init_time total:",init_end-init_start)
     while it < iters:
         k = min(chunk, iters - it)
         carry, (metrics_tensors, episode_metrics) = trainer["train_from"](
@@ -305,7 +308,7 @@ def main():
         if use_full_metrics and block_processor is not None:
             args_taks = (metrics_tensors, it, T * E, A)
             block_processor.add_task(args_taks)
-        m = {key_: np.asarray(val) for key_, val in episode_metrics.items()}
+        m = {key: np.asarray(val) for key, val in episode_metrics.items()}
 
         deliv = None
         ret = None
@@ -314,12 +317,12 @@ def main():
             deliv = float(m["deliveries"][i])
             ret = float(m["episode_return"][i])
             ema = (
-               deliv
+               ret
                if ema is None
-               else args.ema_decay * ema + (1 - args.ema_decay) * ret
+               else (args.ema_decay * ema + (1 - args.ema_decay) * ret)
             )
 
-            if not use_full_metrics:
+            if not use_full_metrics and isinstance(logger,CSVLogger) :
                 logger.log(
                     {
                         "environment_steps": done * T * E,
@@ -379,7 +382,8 @@ def main():
     mgr.wait()
     if block_processor is not None:
         block_processor.close()
-    logger.close()
+    log=logger.result() if not isinstance(logger,CSVLogger) else logger
+    log.close()
     dt = time.perf_counter() - t0
     ran = iters - start
     total = ran * E * T

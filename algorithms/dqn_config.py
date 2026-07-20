@@ -70,7 +70,7 @@ class DQNConfig:
 
     # --- replay / target ---
     buffer_size: int = 1_000         # episodes (algs override default.yaml's 32)
-    batch_size: int = 16             # episodes sampled per gradient update
+    batch_size: int = 32             # episodes sampled per gradient update
     target_update_interval: int = 200  # HARD copy every N episodes (tau path unused)
 
     # --- exploration (epsilon-greedy; anneal time is per-algo) ---
