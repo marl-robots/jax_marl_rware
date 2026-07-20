@@ -248,6 +248,7 @@ def extract_flat_grads(grads_raw, prefix="", out=None):
             out[full_key] = value
 
         else:
+            print(type(value))
             # ignore anything else (lists, None, scalars, etc.)
             pass
     

@@ -62,6 +62,45 @@ class Warehouse:
             self.cfg, state.agent_x, state.agent_y, state.agent_dir,
             state.agent_carrying, ga, gs, state.in_queue, self.highways,
         )
+    # ---- action masking ----------------------------------------------------
+    def action_masks(self, state: EnvState):
+        """Return a [N, A] float mask (1=allowed, 0=masked) of provably-no-op
+        actions, ordered by the Action enum (NOOP, FORWARD, LEFT, RIGHT,
+        TOGGLE_LOAD).
+
+        Masks ONLY actions whose effect is provably identical to NOOP, so the
+        optimal policy is unchanged (NOOP is always left available):
+          * FORWARD into a static grid boundary -- _req_location clamps the
+            target, so the agent cannot move (collision.py).
+          * TOGGLE_LOAD when inert: not carrying and no shelf on the cell (no
+            pickup, nothing to drop), or carrying and on a highway (drop is
+            disallowed there). Both leave the state unchanged (env.py step).
+        NOOP / LEFT / RIGHT are never masked (turning is always effective, and
+        NOOP keeps a wait option). FORWARD into a cell occupied by an agent or a
+        standing shelf is deliberately NOT masked: whether it is blocked depends
+        on the other agents' simultaneous moves (convoy resolution, collision.py),
+        so it is not a guaranteed no-op.
+        """
+        N = self.cfg.n_agents
+        x, y, d = state.agent_x, state.agent_y, state.agent_dir
+        carrying = state.agent_carrying > 0
+        on_highway = self.highways[y, x] > 0
+        _, gs = self._grids(state)
+        shelf_here = gs[y, x] > 0
+
+        at_boundary = (
+            ((d == Direction.UP) & (y == 0))
+            | ((d == Direction.DOWN) & (y == self.H - 1))
+            | ((d == Direction.LEFT) & (x == 0))
+            | ((d == Direction.RIGHT) & (x == self.W - 1))
+        )
+        toggle_noop = (carrying & on_highway) | ((~carrying) & (~shelf_here))
+
+        ones = jnp.ones((N,), bool)
+        mask = jnp.stack(
+            [ones, ~at_boundary, ones, ones, ~toggle_noop], axis=-1
+        )  # columns: NOOP, FORWARD, LEFT, RIGHT, TOGGLE_LOAD
+        return mask.astype(jnp.float32)
 
     # ---- reset -------------------------------------------------------------
     @functools.partial(jax.jit, static_argnums=0)

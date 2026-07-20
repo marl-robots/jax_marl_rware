@@ -36,10 +36,8 @@ def process_raw(raw: dict, upd: int, batch_steps: int, actionDim: int):
         deliveries_tensor_raw shape:(U, T, E, N)
         distance_traveled_tensor_raw shape:(U, T, E, N)
         epoch_old_logp_tensor_raw shape:(U, T, E, N)
-        no need epoch_returns_tensor_raw shape:(U, T, E, N)
         idle_tensor_raw shape:(U, T, E, N)
         pickup_tensor_raw shape:(U, T, E, N)
-        no need logits_tensor_raw shape:(U, T, 1, E*N, A)
         epoch_grads_tensor_raw (gradients dict need flat):(U,P,....)
         rewards_std_tensor_raw shape:(U, T, E, N)
         epoch_actor_loss_tensor_raw shape:(U, P, T, E)
@@ -118,12 +116,11 @@ def process_raw(raw: dict, upd: int, batch_steps: int, actionDim: int):
     rewards_tensor_raw = jnp.array(raw["rewards_tensor_raw"])
     step_count_tensor_raw = jnp.array(raw["step_count_tensor_raw"])
     step_time_tensor_raw = jnp.array(raw["step_time_tensor_raw"])
-    U = int(raw["epoch_values_tensor_raw"].shape[0])
-    P = int(raw["epoch_values_tensor_raw"].shape[1])
-    T = int(raw["epoch_values_tensor_raw"].shape[2])
-    E = int(raw["epoch_values_tensor_raw"].shape[3])
-    N = int(raw["epoch_values_tensor_raw"].shape[4])
-    O = int(observation_tensor_raw.shape[-1])
+    U = int(observation_tensor_raw.shape[0])
+    T = int(observation_tensor_raw.shape[1])
+    E = int(observation_tensor_raw.shape[2])
+    N = int(observation_tensor_raw.shape[3])
+    O = int(observation_tensor_raw.shape[4])
     A = actionDim
     # Episode is split into thirds to show how behavior shifts within the 500-step episode.
     # [0-(t1-1),E,N,]
@@ -450,27 +447,76 @@ def process_raw(raw: dict, upd: int, batch_steps: int, actionDim: int):
         for key, val in metrics.items():
             if isinstance(val, float):
                 if math.isinf(val):
-                    only_floats_metrics[key] = jnp.finfo(jnp.float32).max
+                    only_floats_metrics[key] = np.finfo(np.float32).max
                 else:
-                    only_floats_metrics[key] = jnp.float32(val)
+                    only_floats_metrics[key] = np.float32(val)
 
             elif isinstance(val, jnp.ndarray):
                 if val.size == 0:
-                    only_floats_metrics[key] = jnp.float32(0.0)
+                    only_floats_metrics[key] = np.float32(0.0)
                 elif val.size == 1:
                     if jnp.isinf(val):
-                        only_floats_metrics[key] = jnp.finfo(jnp.float32).max
+                        only_floats_metrics[key] = np.finfo(np.float32).max
                     else:
-                        only_floats_metrics[key] = jnp.float32(val)
-
+                        only_floats_metrics[key] = np.float32(val)
             else:
-                only_floats_metrics[key] = val
+                only_floats_metrics[key] = np.float32(val)
 
         # all per-update metrics for this chunk, as np arrays of shape [k]
-        m = {key: np.asarray(val) for key, val in only_floats_metrics.items()}
+        m = {key: np.array(val) for key, val in only_floats_metrics.items()}
         m = {key: float(val) for key, val in m.items()}
         m["updates"] = int(m["updates"])
         m["environment_steps"] = int(m["environment_steps"])
 
         logger_metrics_list.append(m)
     return logger_metrics_list
+
+#####################################################DELETE UNDER####################
+def load_metrics():
+    import json
+
+    from flax import serialization
+
+    try:
+        with open("metrics_tensors.msgpack", "rb") as f:
+            raw = f.read()
+    except:
+        raise ValueError(
+            "metrics_tensors.msgpack not found use save metrics inside train_mappo while"
+        )
+    try:
+        with open("metrics_template.json", "r") as f:
+            metrics_template = json.load(f)
+    except:
+        raise ValueError(
+            "metrics_template.json not found use save metrics inside train_mappo while"
+        )
+    metrics_loaded = serialization.from_bytes(metrics_template, raw)
+    return metrics_loaded
+
+
+def convert_np_to_jnp(tree):
+    """Recursively convert np.ndarray → jnp.array while keeping dict structure."""
+    if isinstance(tree, dict):
+        return {k: convert_np_to_jnp(v) for k, v in tree.items()}
+    elif isinstance(tree, np.ndarray):
+        return jnp.array(tree)
+    else:
+        return tree
+
+
+#if __name__ == "__main__":
+#    raw = load_metrics()
+#    jnp_raw = {}
+#    for k, v in raw.items():
+#        if isinstance(v, dict):
+#            grads = convert_np_to_jnp(v)
+#            jnp_raw[k] = grads
+#        if isinstance(v, np.ndarray):
+#            jnp_raw[k] = jnp.array(v)
+#               
+#    ret=process_raw(jnp_raw, 100, 1, 5)
+#
+#    for dic in ret:
+#        for k,v in dic.items():
+#            print(k,v)

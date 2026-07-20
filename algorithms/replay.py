@@ -26,6 +26,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from algorithms.dqn import _augment_obs, epsilon_at
+from algorithms.dqn_train import _NEG
 from algorithms.networks import ScannedGRU
 
 REPLAY_DIR = "replays"
@@ -114,11 +116,11 @@ def make_seac_recorder(env, actor, cfg):
     H = cfg.hidden_dim
     T = cfg.time_limit
     resets_11 = jnp.zeros((1, 1))
-
+    
     def act_i(p_i, h_i, o_i):                  # o_i [obs], h_i [1, H]
         h_i, dist = actor.apply(p_i, h_i, (o_i[None, None], resets_11))
         return h_i, dist.logits[0, 0]          # [A]
-
+    
     @functools.partial(jax.jit, static_argnums=(2,))
     def record(actor_params, key, greedy: bool = False):
         kreset, krun = jax.random.split(key)
@@ -146,7 +148,6 @@ def make_seac_recorder(env, actor, cfg):
                 "drop": info["drop"],
             }
             return (nstate, nobs, h_actor, rng), out
-
         _, out = jax.lax.scan(step, (state0, obs0, h0, krun), None, length=T)
         states_T1 = jax.tree_util.tree_map(
             lambda s0, sT: jnp.concatenate([s0[None], sT], axis=0),
@@ -171,7 +172,97 @@ def make_seac_recorder(env, actor, cfg):
 
     return record
 
+def make_dqn_recorder(env, qnet, cfg):
+    """Build a jitted single-env episode recorder bound to (env, actor, cfg).
 
+    Returns ``record(actor_params, key, greedy=False) -> (traj, scalars)``
+    where ``traj`` is a dict of stacked device arrays (see module docstring)
+    and ``scalars`` is ``(ep_return, total_deliveries)``. Compiles once per
+    (greedy,) variant and is reused across calls — cheap enough to run every
+    training chunk.
+    """
+    N = cfg.n_agents
+    obs_dim = env.obs_dim
+    H = cfg.hidden_dim
+    T = cfg.time_limit
+    E=cfg.parallel_envs
+    B = E * N
+    A=env.num_actions
+    K = cfg.ensemble_size
+    zeros_1N = jnp.zeros((1, B))
+
+    @functools.partial(jax.jit, static_argnums=(2,))
+    def record(qnet_params, key, mask_on: bool = False):
+        kreset, krun = jax.random.split(key)
+        state0, obs0 = env.reset(kreset)
+        h0  = jnp.zeros((K, B, H))
+        
+        #obs = _augment_obs(obs0, N, cfg.obs_agent_id)
+
+        def step(carry, _):
+
+            state, obs, h_ens, rng = carry
+            rng, ka, kr = jax.random.split(rng, 3)
+            print(obs.shape)
+            exit(0)
+            obs_flat = obs.reshape(B, env.obs_dim + (N if cfg.obs_agent_id else 0))
+            def one(p, h):
+                h2, q = qnet.apply(p, h, (obs_flat[None], jnp.zeros((1, B))))
+                return h2, q[0]                                 # q[0]: [B, A]
+            h_ens, q = jax.vmap(one)(qnet_params, h_ens)  
+            ucb = q.mean(axis=0) + cfg.ucb_beta * q.std(axis=0)  # [B, A]
+            epsilon = epsilon_at(cfg, 0 * E * T)
+            if mask_on:
+                amask = jax.vmap(env.action_masks)(state).reshape(B, A)  # [B,A]
+                greedy = jnp.argmax(jnp.where(amask > 0, ucb, _NEG), axis=-1)
+                # epsilon-random restricted to valid actions (uniform over them)
+                rand_a = jax.random.categorical(ka, jnp.where(amask > 0, 0.0, _NEG))
+            else:
+                greedy = jnp.argmax(ucb, axis=-1)
+                rand_a = jax.random.randint(ka, (B,), 0, A)
+            actions = jnp.where(jax.random.uniform(kr, (B,)) < epsilon,
+                                rand_a, greedy).reshape(E, N)
+            nstate, nobs, reward, done, info = env.step(state, actions)
+            #nobs = _augment_obs(nobs, N, cfg.obs_agent_id)
+            out = {
+                "state": nstate,
+                "actions": actions,
+                "rewards": reward,
+                "deliveries": info["deliveries"],
+                "blocked": info["forward_blocked"],
+                "noop": info["noop"],
+                "pickup": info["pickup"],
+                "drop": info["drop"],
+            }
+            return (nstate, nobs, h_ens, rng), out
+
+        _, out = jax.lax.scan(step, (state0, obs0, h0, krun), None, length=T)
+
+        # prepend the post-reset state so players can draw frame 0
+        states_T1 = jax.tree_util.tree_map(
+            lambda s0, sT: jnp.concatenate([s0[None], sT], axis=0),
+            state0, out["state"])
+        traj = {
+            "agent_x": states_T1.agent_x,          # [T+1, N]
+            "agent_y": states_T1.agent_y,
+            "agent_dir": states_T1.agent_dir,
+            "agent_carrying": states_T1.agent_carrying,
+            "shelf_x": states_T1.shelf_x,          # [T+1, S]
+            "shelf_y": states_T1.shelf_y,
+            "in_queue": states_T1.in_queue,
+            "actions": out["actions"],             # [T, N]
+            "rewards": out["rewards"],             # [T, N]
+            "deliveries": out["deliveries"],       # [T, N]
+            "blocked": out["blocked"],
+            "noop": out["noop"],
+            "pickup": out["pickup"],
+            "drop": out["drop"],
+        }
+        ep_return = out["rewards"].sum()
+        total_deliveries = out["deliveries"].sum()
+        return traj, (ep_return, total_deliveries)
+
+    return record
 def save_replay(run_dir: str, traj, scalars, *, env, cfg, update: int,
                 env_steps: int, seed: int, greedy: bool = False,
                 algo: str | None = None) -> str:

@@ -20,7 +20,7 @@ def save_metrics(run_dir: str, metrics_tensors: dict):
     path = os.path.join(f"{run_dir}", "metrics_template.json")
     with open(path, "w") as f:
         f.write(template_str)
-    exit(0)
+    f.close()
 
 
 def load_metrics():
@@ -28,18 +28,16 @@ def load_metrics():
         with open("metrics_tensors.msgpack", "rb") as f:
             raw = f.read()
     except:
-        ValueError(
+        raise ValueError(
             "metrics_tensors.msgpack not found use save metrics inside train_mappo while"
         )
-        exit(-1)
     try:
         with open("metrics_template.json", "r") as f:
             metrics_template = json.load(f)
     except:
-        ValueError(
+        raise ValueError(
             "metrics_template.json not found use save metrics inside train_mappo while"
         )
-        exit(-1)
     metrics_loaded = serialization.from_bytes(metrics_template, raw)
     return metrics_loaded
 
@@ -312,10 +310,11 @@ def test_metrics_handler(
 
     if os.path.exists(file_path):
         os.remove(file_path)
-    logger = CSVLogger(file_path, arrange_key_list, True)
+    logger = CSVLogger(file_path, False)
 
     list_dict = process_raw(zeros_dummy_metric, 1, 1, actionDim=A)
     for dict in list_dict:
         logger.log(dict)
+
 if __name__ == "__main__":
     test_metrics_handler()

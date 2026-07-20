@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "static",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8765"],
+      "port": 8765
+    },
+    {
+      "name": "arena",
+      "runtimeExecutable": "wsl",
+      "runtimeArgs": ["-e", "bash", "-lic", "source ~/miniconda3/etc/profile.d/conda.sh; conda activate jax_env_1; cd /mnt/c/Users/user1/projects/jax_marl3; streamlit run arena/app.py --server.port 8501 --server.headless true"],
+      "port": 8501
+    }
+  ]
+}

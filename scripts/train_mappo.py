@@ -31,26 +31,13 @@ from algorithms.config import MAPPOConfig
 from algorithms.mappo import make_resumable_train
 from algorithms.metrics import CSVLogger
 
-from algorithms.metrics_funcs import create_dummy_metrics, sort_metrics
-from algorithms.metrics_handler import process_raw
-
 from algorithms.metrics_parallel import BlockProcessor, init_Asylogger
 from algorithms.replay import make_recorder, save_replay
 from jaxrware.config import Action
 
 
-def init_logger(
-    path: str, E: int, N: int, A: int, full_metrics: bool = False, resume: bool = False
-):
-    dummy_metric = create_dummy_metrics(E, N, A)
-    init_columns = process_raw(dummy_metric, 1, 1, actionDim=A)
-    key_list = [str(k) for k, _ in init_columns[0].items()]
-    sorted_key_list = sort_metrics(key_list)
-    logger = CSVLogger(path, sorted_key_list, full_metrics, resume)
-    return logger
-
-
 def main():
+    init_start=time.perf_counter()
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "--algo",
@@ -167,42 +154,60 @@ def main():
     ap.add_argument(
         "--full-metrics",
         action="store_true",
-        help="disable the per-chunk behavioral commentary (Layer 2)",
+        help="add full metrics to logger",
     )
 
     args = ap.parse_args()
+    # When resuming with a known run-dir, load the saved config as the base so
+    # the user doesn't have to re-specify every hyperparameter on the CLI.
+    # Explicit CLI flags still override the saved values.
 
-    overrides = {}
+    saved = {}
+    if args.resume and args.run_dir:
+        try:
+            saved = CheckpointManager.load_config(args.run_dir)
+        except FileNotFoundError:
+            pass
+    # Collect only the CLI flags the user explicitly passed
+    cli_overrides = {}
     if args.parallel_envs is not None:
-        overrides["parallel_envs"] = args.parallel_envs
+        cli_overrides["parallel_envs"] = args.parallel_envs
     if args.entropy_coef is not None:
-        overrides["entropy_coef"] = args.entropy_coef
+        cli_overrides["entropy_coef"] = args.entropy_coef
     if args.lr is not None:
-        overrides["lr"] = args.lr
+        cli_overrides["lr"] = args.lr
     if args.num_epochs is not None:
-        overrides["num_epochs"] = args.num_epochs
+        cli_overrides["num_epochs"] = args.num_epochs
     if args.no_rnn:
-        overrides["use_rnn"] = False
+        cli_overrides["use_rnn"] = False
+    if args.total_steps is not None:
+        pe = (
+            cli_overrides.get("parallel_envs")
+            or saved.get("parallel_envs")
+            or MAPPOConfig.parallel_envs
+        )
+        cli_overrides["num_updates"] = args.total_steps // (MAPPOConfig.time_limit * pe)
+    if saved:
+        # saved config has all fields; merge with CLI overrides and construct directly
 
-    cfg = MAPPOConfig.from_algo(
-        args.algo,
-        size=args.size,
-        n_agents=args.n_agents,
-        difficulty=args.difficulty,
-        seed=args.seed,
-        total_steps=(
-            args.total_steps
-            if args.total_steps is not None
-            else MAPPOConfig.total_steps
-        ),
-        **overrides,
-    )
+        merged = {**saved, **cli_overrides}
+        merged.pop("algo", None)  # @property, not a dataclass field
+        cfg = MAPPOConfig(**merged)
+    else:
+        cfg: MAPPOConfig = MAPPOConfig.from_algo(
+            args.algo,
+            size=args.size,
+            n_agents=args.n_agents,
+            difficulty=args.difficulty,
+            seed=args.seed,
+            **cli_overrides,
+        )
     n_updates = args.updates if args.updates is not None else cfg.num_updates
-
+    chunk = max(1, args.checkpoint_every)
     now = datetime.now()
     date_time = now.strftime("%Y_%m_%d_%H_%M_%S")
 
-    net_tag = "" if cfg.use_rnn else "_fc"
+    net_tag = "_rnn" if cfg.use_rnn else "_fc"
 
     if args.resume:
         run_dir = args.run_dir or os.path.join(
@@ -217,11 +222,11 @@ def main():
             f"{date_time}",
             f"{cfg.algo}{net_tag}_Warehouse_{cfg.size}-{cfg.n_agents}ag_seed{cfg.seed}",
         )
-
     csv_path = os.path.join(run_dir, "results.csv")
     batch_steps = cfg.batch_steps
-    chunk = max(1, args.checkpoint_every)
 
+
+    print(f"backend={jax.default_backend()}  devices={jax.devices()}")
     print(
         f"algo={cfg.algo} (centralised_critic={cfg.centralised_critic}, "
         f"use_ppo={cfg.use_ppo}, use_rnn={cfg.use_rnn})"
@@ -244,6 +249,7 @@ def main():
     trainer = make_resumable_train(cfg, live_log=not args.no_live_log)
 
     # ---- init or resume ----
+
     key = jax.random.PRNGKey(cfg.seed)
     carry = trainer["init_carry"](key)  # also the target structure for restore
     resume = args.resume and has_checkpoint(run_dir)
@@ -265,19 +271,23 @@ def main():
             f"resumed from checkpoint step {start} ({sel}) "
             f"({start * batch_steps:,} env steps)"
         )
-    E = MAPPOConfig.parallel_envs
-    N = MAPPOConfig.n_agents
+    E = cfg.parallel_envs
+    N = cfg.n_agents
     A = len(Action)
+
     use_full_metrics = args.full_metrics
-    # logger = init_logger(csv_path, E, N, A, use_full_metrics, resume)
-    logger = init_Asylogger(csv_path, E, N, A, use_full_metrics, resume)
-    block_processor = BlockProcessor(logger)
+    block_processor=None
+    if use_full_metrics:
+        logger = init_Asylogger(csv_path, E, N, A, use_full_metrics, resume)
+    else:
+        logger = CSVLogger(csv_path, resume)
     if start >= n_updates:
         print(f"nothing to do: start={start} >= n_updates={n_updates}")
-        logger.close()
-        block_processor.close()
+        log=logger.result() if not isinstance(logger,CSVLogger) else logger
+        log.close()
         mgr.wait()
         return
+    block_processor = BlockProcessor(logger)
 
     if not args.no_live_log:
         print(
@@ -285,8 +295,8 @@ def main():
             "entropy) follows; watch entropy — a fast drop toward 0 means "
             "exploration collapse:\n"
         )
-
     # ---- chunked training loop (orbax saves between chunks, main thread) ----
+
     narrator = None if args.no_commentary else Narrator()
     replay_every = chunk if args.replay_every is None else args.replay_every
     recorder = (
@@ -294,6 +304,7 @@ def main():
         if replay_every > 0
         else None
     )
+
     replay_key = jax.random.PRNGKey(args.replay_seed)
     next_replay = (
         (start // replay_every + 1) * replay_every if replay_every > 0 else None
@@ -321,6 +332,7 @@ def main():
             )
 
     # snapshot the untrained (or resumed) policy first — frame 0 of the story
+
     if recorder is not None:
         record_snapshot(start)
     last_replay = start
@@ -328,6 +340,8 @@ def main():
     ema = None
     t0 = time.perf_counter()
     upd = start
+    init_end=time.perf_counter()
+    print("init_time total:",init_end-init_start)
 
     while upd < n_updates:
         k = min(chunk, n_updates - upd)
@@ -336,12 +350,11 @@ def main():
             carry=carry, base_upd=upd, n=k, n_updates=n_updates
         )
         carry = jax.block_until_ready(carry)
-        m = {key: np.asarray(val) for key, val in episode_metrics.items()}
 
-        if use_full_metrics:
+        if use_full_metrics and block_processor is not None:
             args_taks = (metrics_tensors, upd, batch_steps, A)
             block_processor.add_task(args_taks)
-
+        m = {key: np.asarray(val) for key, val in episode_metrics.items()}
         for i in range(k):
             done_count = upd + i + 1
             ret_i = float(episode_metrics["episode_return"][i])
@@ -351,7 +364,7 @@ def main():
                 else (args.ema_decay * ema + (1.0 - args.ema_decay) * ret_i)
             )
 
-            if not use_full_metrics:
+            if not use_full_metrics and isinstance(logger,CSVLogger) :
                 logger.log(
                     {
                         "environment_steps": done_count * batch_steps,
@@ -374,13 +387,10 @@ def main():
                         "block_late_mean": float(m["block_late"][i]),
                     }
                 )
-
         upd += k
-        if not ema is None:
-            mgr.save(upd, carry, smoothed_return=ema)
-
         # replay snapshots (chunk granularity: record once when a boundary is
         # crossed; intra-chunk params are gone anyway)
+
         if recorder is not None and next_replay is not None and upd >= next_replay:
             record_snapshot(upd)
             last_replay = upd
@@ -388,27 +398,32 @@ def main():
                 next_replay += replay_every
         # Layer 2: one behavioral commentary block per chunk (host-side, between
         # chunks -> no effect on the fused-scan rollout speed).
+
         if narrator is not None:
             stats = {
                 key: float(episode_metrics[key].mean())
                 for key in (  # [k,]
-                    "episode_returns_mean",
-                    "deliveries_mean",
-                    "block_rate_mean",
-                    "idle_rate_mean",
-                    "deliveries_early_mean",
-                    "deliveries_mid_mean",
-                    "deliveries_late_mean",
+                    "episode_return",
+                    "deliveries",
+                    "block_rate",
+                    "idle_rate",
+                    "deliveries_early",
+                    "deliveries_mid",
+                    "deliveries_late",
                 )
             }
             print(narrator.chunk(upd, stats), flush=True)
-
+        if ema is not None:
+            mgr.save(upd, carry, smoothed_return=ema)
     # final-policy replay even when the run length isn't a cadence multiple
+
     if recorder is not None and last_replay != n_updates:
         record_snapshot(n_updates)
     mgr.wait()
-    block_processor.close()
-    logger.close()
+    if block_processor is not None:
+        block_processor.close()
+    log=logger.result() if not isinstance(logger,CSVLogger) else logger
+    log.close()
     dt = time.perf_counter() - t0
 
     ran = n_updates - start

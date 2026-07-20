@@ -15,3 +15,8 @@ runs/
 # editor settings
 .vscode/
 git_Ignores/
+# local Claude settings + scratch (paper copies, tmp figs, one-off scripts)
+.claude/settings.local.json
+_tmp_*
+scripts/_resume_*.sh
+TODO*

@@ -26,8 +26,6 @@ _ALGO_FLAGS = {
     "ia2c": (False, False),
     "ippo": (False, True),
     "maa2c": (True, False),
-    "ica2c": (False, True),
-    "maca2c": (True, False),
     "mappo": (True, True),
 }
 
@@ -64,9 +62,14 @@ class MAPPOConfig:
     parameter_sharing: bool = True
     centralised_critic: bool = True
     orthogonal_gain: float = 2.0 ** 0.5  # gain on the FINAL Dense only
-
+    # --- action masking (opt-in; off == byte-identical to the unmasked path) ---
+    # When True the env emits a [N, A] mask of PROVABLY-no-op actions
+    # (Warehouse.action_masks) that is applied identically at rollout action
+    # selection (UCB greedy + eps-random) and in the bootstrap-max target, so
+    # the optimal policy is provably unchanged and only wasted exploration is
+    # removed. Default off -> no mask is computed, stored, or applied.
     # --- run ---
-    total_steps: int = 20_000_000
+    _total_steps: int = 20_000_000
     seed: int = 2
     algo_name: str="mappo"
 
@@ -97,4 +100,10 @@ class MAPPOConfig:
 
     @property
     def num_updates(self) -> int:
-        return self.total_steps // self.batch_steps
+        return self._total_steps // self.batch_steps
+    
+    @property
+    def total_steps(self) -> int:
+        """Total env steps across the run (derived; for logging only)."""
+        return self.num_updates * self.batch_steps
+

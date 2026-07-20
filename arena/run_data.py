@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import pandas as pd
+import jax.numpy as jnp
 
 
 # ---------------------------------------------------------------------------
@@ -29,20 +30,22 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # The five contestants. Order is the canonical display/medal order; the colour
 # is reused everywhere (charts, leaderboard) so each algorithm reads the same.
-ALGO_ORDER = ["ia2c", "ippo", "maa2c", "mappo", "seac"]
+ALGO_ORDER = ["ia2c", "ippo", "maa2c", "mappo", "seac", "emax"]
 ALGO_LABELS = {
     "ia2c": "IA2C",
     "ippo": "IPPO",
     "maa2c": "MAA2C",
     "mappo": "MAPPO",
     "seac": "SEAC",
+    "emax": "IDQN-EMAX",   # value-based ensemble (arXiv:2302.03439)
 }
 ALGO_COLORS = {
-    "ia2c": "#4C78A8",  # blue
-    "ippo": "#54A24B",  # green
+    "ia2c": "#4C78A8",   # blue
+    "ippo": "#54A24B",   # green
     "maa2c": "#E45756",  # red
     "mappo": "#F58518",  # orange
-    "seac": "#B279A2",  # purple
+    "seac": "#B279A2",   # purple
+    "emax": "#F72585",   # magenta (the value-based family)
 }
 _UNKNOWN_COLOR = "#8C8C8C"
 
@@ -407,6 +410,7 @@ def discover_runs(root: str = "runs") -> list[str]:
 
 
 def load_run(run_dir: str) -> RunData:
+    import csv
     """Load one run directory into a RunData (tolerant of missing pieces)."""
     run_dir = os.path.abspath(run_dir)
     name = os.path.basename(run_dir)
@@ -447,7 +451,14 @@ def load_runs(root: str = "runs") -> list[RunData]:
 # compact summary for the LLM agents (NEVER pass raw CSV to a model)
 # ---------------------------------------------------------------------------
 def _tail_mean(series: pd.Series, frac: float = 0.1) -> float:
-    """Mean over the final `frac` of a series (robust 'final' value)."""
+    """Mean over the final `frac` of a series (robust 'final' value).
+
+    Drops NaNs first so value-based (IDQN-EMAX) runs -- whose CSVs leave the
+    AC-family behaviour columns (block_rate, idle_rate, phase splits) empty --
+    summarise cleanly instead of yielding NaN.
+    """
+    series = series.dropna()
+
     if len(series) == 0:
         return 0.0
     k = max(1, int(len(series) * frac))
@@ -524,7 +535,7 @@ def summarize(run: RunData) -> dict:
     sm["deliveries_mean"] = df["deliveries_mean"].rolling(win, min_periods=win).mean()
     # sample efficiency: steps to reach 50% of this run's own best (smoothed)
     out["steps_to_half_best"] = _steps_to_threshold(
-        sm, "mean_episode_returns", 0.5 * float(sm["episode_returns_mean"].max())
+        sm, "episode_returns_mean", 0.5 * float(sm["episode_returns_mean"].max())
     )
     # first sustained deliveries
     out["steps_to_first_delivery"] = _steps_to_threshold(sm, "deliveries_mean", 0.5)

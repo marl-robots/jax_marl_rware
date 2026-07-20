@@ -8,29 +8,49 @@ import numpy as np
 COLUMNS = [
     "environment_steps",
     "updates",
-    "mean_episode_returns",
-    "entropy",
-    "loss",
-    "actor_loss",
-    "value_loss",
+    "episode_returns_mean",
+    "entropy_mean",
+    "loss_mean",
+    "actor_loss_mean",
+    "value_loss_mean",
     "reward_std_mean",
-    "deliveries",
-    "block_rate",
-    "idle_rate",
-    "pickup_rate",
-    "deliveries_early",
-    "deliveries_mid",
-    "deliveries_late",
-    "block_early",
-    "block_mid",
-    "block_late",
+# behavioral signals (commentary)
+    "deliveries_mean",
+    "block_rate_mean",
+    "idle_rate_mean",
+    "pickup_rate_mean",
+    "deliveries_early_mean",
+    "deliveries_mid_mean",
+    "deliveries_late_mean",
+    "block_early_mean",
+    "block_mid_mean",
+    "block_late_mean",
 ]
 
+COLUMNS_DQN = [
+    "environment_steps",
+    "updates",
+    "episode_returns_mean",
+    "loss_mean",
+    "epsilon",
+    "reward_std_mean",
+    "deliveries_mean",
+    "block_rate_mean",
+    "idle_rate_mean",
+    "pickup_rate_mean",
+    "deliveries_early_mean",
+    "deliveries_mid_mean",
+    "deliveries_late_mean",
+    "block_early_mean",
+    "block_mid_mean",
+    "block_late_mean",
+]
 
 class AsyncCSVLogger:
-    def __init__(self, path, dict_keys, full_metrics=False, resume=False):
+    def __init__(self, path, dict_keys, full_metrics=False, resume=False,isdqn=False):
         self.full_metrics = full_metrics
         self.dict_keys = dict_keys
+        self.isdqn = isdqn
 
         # --- File setup ---
 
@@ -44,7 +64,10 @@ class AsyncCSVLogger:
         self._w = csv.writer(self._f)
 
         if write_header:
-            self._w.writerow(dict_keys if full_metrics else COLUMNS)
+            if isdqn:
+                self._w.writerow(dict_keys if full_metrics else COLUMNS_DQN)
+            else:
+                self._w.writerow(dict_keys if full_metrics else COLUMNS)
             self._f.flush()
         # --- Async logging ---
 
@@ -63,7 +86,10 @@ class AsyncCSVLogger:
         if self.full_metrics:
             row = [raw.get(c, f"{np.finfo(np.float32).max}") for c in self.dict_keys]
         else:
-            row = [raw.get(c, "") for c in COLUMNS]
+            if self.isdqn:
+                row = [raw.get(c, "") for c in COLUMNS]
+            else:
+                row = [raw.get(c, "") for c in COLUMNS_DQN]
         self._w.writerow(row)
         self._f.flush()
 
@@ -79,20 +105,36 @@ class AsyncCSVLogger:
             pass
 
 
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from algorithms.metrics_handler import process_raw as process_block
 from algorithms.metrics_funcs import create_dummy_metrics, sort_metrics
 
+from concurrent.futures import ThreadPoolExecutor
+
+
 
 def init_Asylogger(
-    path: str, E: int, N: int, A: int, full_metrics: bool = False, resume: bool = False
+    path: str, E: int, N: int, A: int, full_metrics: bool = False, resume: bool = False,isdqn:bool=False
 ):
-    dummy_metric = create_dummy_metrics(E, N, A)
-    init_columns = process_block(dummy_metric, 1, 1, actionDim=A)
-    key_list = [str(k) for k, _ in init_columns[0].items()]
-    sorted_key_list = sort_metrics(key_list)
-    logger = AsyncCSVLogger(path, sorted_key_list, full_metrics, resume)
-    return logger
+
+    def init_l(E, N, A):
+        if isdqn:
+            dummy_metric = create_dummy_metrics(E, N, A)
+            init_columns = process_block(dummy_metric, 1, 1, actionDim=A)
+        else:
+            dummy_metric = create_dummy_metrics(E, N, A)
+            init_columns = process_block(dummy_metric, 1, 1, actionDim=A)
+
+        key_list = [str(k) for k, _ in init_columns[0].items()]
+        sorted_key_list = sort_metrics(key_list)
+        logger = AsyncCSVLogger(path, sorted_key_list, full_metrics, resume,isdqn)
+        return logger
+    
+    executor = ThreadPoolExecutor(max_workers=1)
+    logger_future = executor.submit(init_l,E, N, A)
+ 
+    
+    return logger_future
 
 import queue
 import threading
@@ -133,4 +175,8 @@ class BlockProcessor:
             block = future.result()  # list[dict]
 
             for row in block:
-                self.logger.log(row)
+                if isinstance(self.logger,Future):
+                    logger=self.logger.result()
+                    logger.log(row)
+                else:
+                    self.logger.log(row)

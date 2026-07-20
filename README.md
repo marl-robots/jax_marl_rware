@@ -90,6 +90,11 @@ python -m scripts.train_mappo --algo ippo  --updates 20               # quick sm
 python -m scripts.train_mappo --algo mappo --no-rnn                   # FC (~11x faster, lower ceiling)
 python -m scripts.train_mappo --algo mappo --resume                   # continue from last checkpoint
 
+# train the value-based IDQN-EMAX (ensemble + UCB exploration; arXiv:2302.03439)
+python -m scripts.train_dqn_fast --size tiny  --n-agents 4 --ensemble-size 5   # K=5 EMAX
+python -m scripts.train_dqn_fast --size large --n-agents 4 --ensemble-size 5   # scales to large
+python -m scripts.train_dqn_fast --size medium --n-agents 4 --ensemble-size 1  # ablation: no ensemble
+
 # render a trained checkpoint to mp4/gif/png
 python -m scripts.render_rollout --run-dir runs/mappo_tiny-4ag_seed2 --step best
 
@@ -115,7 +120,10 @@ IA2C (ind, A2C) · IPPO (ind, PPO) · MAA2C (cent, A2C) · MAPPO (cent, PPO).
 | FC vs GRU | ✅ characterized: FC ~11× faster, GRU higher ceiling on RWARE |
 | Checkpointing / resume / render | ✅ |
 | SEAC | ⚠️ **partial** — loss/gradients **parity-validated vs a PyTorch transcription of uoe-agents/seac** (`tests/test_seac_parity.py`); training *regime* still differs from canonical (full-episode rollouts + Adam here vs 5-step + RMSprop/clip there) and no machine-readable reference curve exists to close that gap |
-| Value-based (IDQN/VDN/QMIX) | ❌ not yet implemented |
+| Value-based base: IDQN | ✅ off-policy stack (device-resident replay, ε-greedy, double-Q, reward standardisation); update **parity-validated to 1e-6** vs an EPyMARL PyTorch transcription (`tests/test_dqn_parity.py`) |
+| **IDQN-EMAX** (ensemble + UCB) | ✅ faithful reconstruction of arXiv:2302.03439 (K=5, UCB action selection, ensemble-mean targets, bootstrapped sampling); ensemble update parity-validated to 1e-6; **reproduces the paper's behaviour and scales tiny→large** (see [`docs/paper/`](docs/paper/paper.md)) — EMAX code was never publicly released, so the ensemble layer is behaviour-validated, not parity-validated |
+| EMAX recurrent / action-masking | ⚠️ implemented behind flags, **off by default, performance-unvalidated** (see `ACTION_MASKING.md`) |
+| Value-based mixers (VDN / QMIX) | ❌ designed-for but not yet implemented |
 
 ## Validation philosophy
 
@@ -124,8 +132,16 @@ Claims are backed by **numerical parity**, not narrative:
   both this env and the original rware; assert exact equality of positions,
   grid, queue, rewards, done across many seeds (`tests/test_parity_env.py`).
 - **Algorithms:** gradient-parity of the PPO update against a PyTorch transcription
-  (`tests/test_mappo_parity.py`), plus learning-curve comparison to the
-  `deep_marl_data` reference runs.
+  (`tests/test_mappo_parity.py`), the SEAC update (`tests/test_seac_parity.py`),
+  and the IDQN/EMAX updates (`tests/test_dqn_parity.py`), plus learning-curve
+  comparison to the `deep_marl_data` reference runs.
+- **Where no oracle exists** (the EMAX ensemble layer — its code was never
+  released): we validate by reproducing the *behaviour* the paper claims and say
+  so explicitly, rather than asserting a parity we cannot check.
+
+> 📄 **Final-project paper:** [`docs/paper/paper.md`](docs/paper/paper.md) writes
+> the project up as a short academic article (engine + parity + the EMAX
+> value-based port + scaling results + the LLM `arena` layer).
 
 ## Attribution
 

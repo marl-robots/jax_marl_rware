@@ -1,0 +1,8 @@
+# Treat binary assets as binary so core.autocrlf never rewrites their bytes.
+*.pdf  binary
+*.png  binary
+*.jpg  binary
+*.gif  binary
+*.mp4  binary
+*.npz  binary
+*.npy  binary

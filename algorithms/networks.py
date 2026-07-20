@@ -62,12 +62,26 @@ class ActorRNN(nn.Module):
     hidden_dim: int = 128
     orthogonal_gain: float = 2.0 ** 0.5
     use_rnn: bool = True
+    use_cnn: bool = False        # spatial conv over the 3x3 sensor window (sr=1)
+    cnn_filters: int = 32
 
     @nn.compact
     def __call__(self, hidden, x):
         obs, dones = x  # obs: [T, B, obs_dim], dones: [T, B]
         ortho = nn.initializers.orthogonal(self.orthogonal_gain)
-        if self.use_rnn:
+        if self.use_cnn:
+            # obs layout (sr=1): [8 self] + [9 cells x 7]; the 9 cells are a 3x3
+            # grid in row-major (dy,dx) order -> conv over it, keep self separate.
+            self_bits = obs[..., :8]
+            cells = obs[..., 8:].reshape(*obs.shape[:-1], 3, 3, 7)
+            h = nn.relu(nn.Conv(self.cnn_filters, (2, 2), padding="SAME",
+                                kernel_init=ortho)(cells))
+            h = nn.relu(nn.Conv(self.cnn_filters, (2, 2), padding="SAME",
+                                kernel_init=ortho)(h))
+            h = h.reshape(*obs.shape[:-1], -1)            # flatten 3x3xF
+            cat = jnp.concatenate([self_bits, h], axis=-1)
+            feat = nn.relu(nn.Dense(self.hidden_dim, kernel_init=ortho)(cat))
+        elif self.use_rnn:
             # marlbase RNNNetwork: default init on first layer + GRU, orthogonal
             # only on the final layer.
             embed = nn.relu(nn.Dense(self.hidden_dim)(obs))  # default (lecun_normal)

@@ -5,12 +5,12 @@ import jax.numpy as jnp
 import numpy as np
 import pandas as pd
 
-MAXF = jnp.finfo(jnp.float32).max
+MAXF = np.finfo(np.float32).max
 
 
 def sanitize_sentinel(values,isCumsum):
-    values = values.to_numpy().astype(jnp.float32)
-    mask = values != MAXF
+    values = values.to_numpy()
+    mask = values.astype(jnp.float32) != MAXF
     if isCumsum:
         num = np.cumsum(values * mask)
         den=np.sum(values * mask)
@@ -30,8 +30,7 @@ def sanitize_sentinel(values,isCumsum):
             out = pd.Series(np.sort(out))
     else:
         # no valid columns → return zeros
-
-        out = pd.Series(np.zeros(values.shape[1], dtype=np.float32))
+        out = pd.Series(np.zeros(values.shape[0], dtype=np.float32))
     return out
 
 

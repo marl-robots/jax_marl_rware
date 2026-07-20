@@ -71,7 +71,6 @@ def ppo_losses(
         denom = filled.sum()
         value_loss = (value_loss_t * filled).sum() / denom
         actor_loss = (actor_loss_t * filled).sum() / denom
-
     loss = actor_loss + value_loss_coef * value_loss
     return loss, (
         actor_loss,
@@ -113,7 +112,6 @@ def a2c_losses(
         denom = filled.sum()
         value_loss = (value_loss_t * filled).sum() / denom
         actor_loss = (actor_loss_t * filled).sum() / denom
-
     loss = actor_loss + value_loss_coef * value_loss
 
     return loss, (
@@ -184,6 +182,7 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     gru_resets = jnp.zeros((T, B))  # no mid-sequence hidden reset (matches marlbase)
 
     # ---- target-critic returns (detached) ----
+
     _, v_target = critic.apply(target_critic, h0(), (central_T, gru_resets))
     v_target = v_target.reshape(T, E, N)
     returns = compute_nstep_returns(
@@ -192,6 +191,7 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
     returns = jax.lax.stop_gradient(returns)
 
     # ---- snapshot old log-probs from current actor ----
+
     _, old_dist = actor.apply(params["actor"], h0(), (obs_flat_T, gru_resets))
     old_logp = old_dist.log_prob(act_flat_T).reshape(T, E, N)
     old_logp = jax.lax.stop_gradient(old_logp)
@@ -230,19 +230,21 @@ def mappo_update(actor, critic, tx, cfg, params, target_critic, opt_state, batch
         return (params, opt_state), (loss, *aux_tensors, grads)
 
     # PPO: num_epochs passes over the batch; A2C: a single grad step.
+
     n_epochs = cfg.num_epochs if cfg.use_ppo else 1
     (params, opt_state), epoch_tensors = jax.lax.scan(
         epoch, (params, opt_state), None, length=n_epochs
     )
 
     # ---- soft target-critic update (once, after epochs) ----
+
     tau = cfg.target_update_tau
     target_critic = jax.tree_util.tree_map(
         lambda tp, sp: (1.0 - tau) * tp + tau * sp, target_critic, params["critic"]
     )
 
     diagnostics = {
-        "returns": returns,
+        ##"returns": returns,
         "old_logp": old_logp,
         "epoch_loss": epoch_tensors[0],
         "epoch_actor_loss": epoch_tensors[1],
@@ -297,12 +299,13 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
     B = E * N
     obs_dim = env.obs_dim
     # centralised critic sees the concat of all agents' obs; independent sees own.
+
     critic_dim = obs_dim * N if cfg.centralised_critic else obs_dim
     T = cfg.time_limit
     H = cfg.hidden_dim
+    A = env.num_actions
 
-    actor = ActorRNN(env.num_actions, H, cfg.orthogonal_gain, cfg.use_rnn)
-
+    actor = ActorRNN(A, H, cfg.orthogonal_gain, cfg.use_rnn)
     critic = CriticRNN(H, cfg.orthogonal_gain, cfg.use_rnn)
     tx = optax.adam(cfg.lr)  # grad_clip=false in the proven config
 
@@ -344,7 +347,8 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
         states, obs = jax.vmap(env.reset)(jax.random.split(kreset, E))  # obs [E,N,obs]
 
         # ---- rollout: one full episode, hidden starts at zeros ----
-        episode_start_time = time.time()
+
+        episode_start_time = time.perf_counter()
 
         def rollout_step(rc, _):
             states, obs, h_actor, welford, key = rc
@@ -358,7 +362,9 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             )  # [B]
             actions = actions_flat.reshape(E, N)
             nstates, nobs, rewards, done, info = jax.vmap(env.step)(states, actions)
-            welford, rstd = _welford_standardise(welford, rewards)
+            welford, rstd = _welford_standardise(welford, rewards)  # [E,N]
+            ##rstd = jnp.where(cfg.standardise_rewards, rstd, rewards)
+
             sig = (
                 info["deliveries"],
                 info["forward_blocked"],
@@ -406,7 +412,7 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             actor, critic, tx, cfg, params, target_critic, opt_state, batch
         )
 
-        episode_end_time = time.time()
+        episode_end_time = time.perf_counter()
         delta_time = episode_end_time - episode_start_time
 
         metrics_tensors = {
@@ -414,16 +420,15 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "rewards_tensor_raw": rraw_t,
             "actions_tensor_raw": act_t,
             "observation_tensor_raw": obs_t,
-            "epoch_returns_tensor_raw": diag["returns"],
-            "epoch_old_logp_tensor_raw": diag["old_logp"],
-            "epoch_entropy_tensor_raw": diag["epoch_entropy_tensor"],
             "epoch_loss_tensor_raw": diag["epoch_loss_tensor"],
             "epoch_actor_loss_tensor_raw": diag["epoch_actor_loss_tensor"],
             "epoch_value_loss_tensor_raw": diag["epoch_value_loss_tensor"],
             "epoch_advantage_tensor_raw": diag["epoch_advantage_tensor"],
             "epoch_values_tensor_raw": diag["epoch_values_tensor"],
             "epoch_logp_tensor_raw": diag["epoch_logp_tensor"],
+            "epoch_old_logp_tensor_raw": diag["old_logp"],
             "epoch_returns_tensor_raw": diag["epoch_returns_tensor"],
+            "epoch_entropy_tensor_raw": diag["epoch_entropy_tensor"],
             "epoch_grads_tensor_raw": diag["epoch_grads_tensor"],
             "rewards_std_tensor_raw": rstd_t,
             "deliveries_tensor_raw": deliv_t,
@@ -465,7 +470,6 @@ def _setup(cfg: MAPPOConfig, live_log: bool = False):
             "block_mid": frac(blocked_t[t1:t2]),
             "block_late": frac(blocked_t[t2:]),
         }
-
         carry = (params, target_critic, opt_state, welford, key)
         if live_log:
             io_callback(

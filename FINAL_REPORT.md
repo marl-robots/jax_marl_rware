@@ -1,4 +1,6 @@
-# Autonomous week — final report
+# Autonomous week — final report (for Tomer)
+
+*Branch `arena-v2`, local only (not pushed, per your instruction). 2026-06-12 → 14.*
 
 ## What this week added
 
