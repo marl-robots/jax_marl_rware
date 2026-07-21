@@ -1,0 +1,71 @@
+## MAPPO tops the arena with a final team return of 36.2
+
+**The task.** RWARE multi-robot warehouse: robots must fetch requested shelves, deliver them to goal stations, and RETURN them to empty rack slots before getting a new request counts. Reward is sparse: exactly +1 per completed delivery, shared nothing — each robot is rewarded only for its own deliveries. Episodes last 500 steps. With reward this sparse, teams must stumble onto a full fetch→deliver→return cycle before any learning signal exists at all.
+
+### MAPPO — rware-tiny-4ag
+
+MAPPO: PPO with a centralised critic — the strongest standard baseline; central 'coach' critic during training, decentralised execution.
+
+First reliable deliveries appeared after 5.1M steps.
+
+Late-training throughput splits early/mid/late = 12.6/11.7/11.9 deliveries per episode third.
+
+### MAA2C — rware-tiny-4ag
+
+MAA2C: A2C with a centralised critic — during training a 'coach' sees all robots at once to judge actions, but each robot still acts only on its own local view.
+
+First reliable deliveries appeared after 4.9M steps.
+
+Late-training throughput splits early/mid/late = 1.9/0.3/0.2 deliveries per episode third.
+
+### IPPO — rware-tiny-4ag
+
+IPPO: independent PPO — like IA2C but with PPO's clipped, more stable policy updates; still no information sharing.
+
+First reliable deliveries appeared after 2.7M steps.
+
+Late-training throughput splits early/mid/late = 5.2/0.2/0.0 deliveries per episode third.
+
+### IA2C — rware-tiny-4ag
+
+IA2C: independent advantage actor-critic — every robot learns alone from its own observations; nobody shares anything.
+
+First reliable deliveries appeared after 4.5M steps.
+
+Late-training throughput splits early/mid/late = 9.4/5.9/4.7 deliveries per episode third.
+
+### MAPPO — rware-tiny-4ag
+
+MAPPO: PPO with a centralised critic — the strongest standard baseline; central 'coach' critic during training, decentralised execution.
+
+First reliable deliveries appeared after 3.3M steps.
+
+Late-training throughput splits early/mid/late = 4.1/0.8/0.4 deliveries per episode third.
+
+### MAPPO — rware-tiny-4ag
+
+MAPPO: PPO with a centralised critic — the strongest standard baseline; central 'coach' critic during training, decentralised execution.
+
+First reliable deliveries appeared after 4.1M steps.
+
+Late-training throughput splits early/mid/late = 2.6/0.3/0.1 deliveries per episode third.
+
+### MAPPO — rware-tiny-4ag
+
+MAPPO: PPO with a centralised critic — the strongest standard baseline; central 'coach' critic during training, decentralised execution.
+
+First reliable deliveries appeared after 3.3M steps.
+
+Late-training throughput splits early/mid/late = 12.4/11.4/11.4 deliveries per episode third.
+
+### MAA2C — rware-tiny-4ag
+
+MAA2C: A2C with a centralised critic — during training a 'coach' sees all robots at once to judge actions, but each robot still acts only on its own local view.
+
+First reliable deliveries appeared after 5.2M steps.
+
+Late-training throughput splits early/mid/late = 3.5/0.4/0.1 deliveries per episode third.
+
+**Head to head:** MAPPO (36.2) > MAPPO (35.2) > IA2C (20.0) > IPPO (5.4) > MAPPO (5.3) > MAA2C (4.0) > MAPPO (3.1) > MAA2C (2.4).
+
+*Generated without an LLM (deterministic fallback) — every number above is measured from results.csv.*

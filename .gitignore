@@ -11,7 +11,7 @@ build/
 dist/
 *.log
 # training outputs (checkpoints, results.csv, config.json)
-runs/
+#runs/
 # editor settings
 .vscode/
 git_Ignores/
