@@ -139,3 +139,43 @@ not original to this project:
 - **MAPPO** — Yu et al., 2021. **SEAC** — Christianos et al., NeurIPS 2020.
 
 Please retain the upstream licenses and cite the above when using this code.
+
+
+
+## Attribution and citation
+
+This project is a JAX re-implementation of the **Multi-Robot Warehouse (RWARE)**
+environment. The environment design, layouts, collision dynamics, observation
+space and reward structure are the work of the original authors and are used
+here under the MIT license (see `LICENSE-RWARE`):
+
+- **RWARE** — Filippos Christianos, Lukas Schäfer, Stefano V. Albrecht
+  (Autonomous Agents Research Group, University of Edinburgh) —
+  https://github.com/semitable/robotic-warehouse
+- **EPyMARL** — reference algorithm implementations and learning curves that
+  the PPO/A2C/IDQN parity tests and curve comparisons validate against —
+  https://github.com/uoe-agents/epymarl
+- **MAPPO** — Yu et al., 2021. **SEAC** — Christianos et al., NeurIPS 2020.
+  **EMAX** — arXiv:2302.03439.
+
+
+```bibtex
+@inproceedings{papoudakis2021benchmarking,
+   title={Benchmarking Multi-Agent Deep Reinforcement Learning Algorithms in Cooperative Tasks},
+   author={Georgios Papoudakis and Filippos Christianos and Lukas Schäfer and Stefano V. Albrecht},
+   booktitle={Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks (NeurIPS)},
+   year={2021},
+   url={http://arxiv.org/abs/2006.07869},
+   code={https://github.com/uoe-agents/epymarl},
+}
+
+@inproceedings{christianos2020shared,
+   title={Shared Experience Actor-Critic for Multi-Agent Reinforcement Learning},
+   author={Christianos, Filippos and Sch\"{a}fer, Lukas and Albrecht, Stefano},
+   booktitle={Advances in Neural Information Processing Systems},
+   volume={33},
+   pages={10707--10717},
+   year={2020},
+   url={https://proceedings.neurips.cc/paper/2020/file/7967cc8e3ab559e68cc944c44b1cf3e8-Paper.pdf},
+}
+```
