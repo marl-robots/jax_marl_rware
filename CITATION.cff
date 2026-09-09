@@ -1,0 +1,38 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below, and cite the original RWARE work it re-implements."
+title: "jax_marl_rware: a JAX port of the Multi-Robot Warehouse (RWARE) with cooperative MARL baselines"
+type: software
+authors:
+  - family-names: "Dabush"
+    given-names: "Koby"
+  - family-names: "Levy"
+    given-names: "Karni"
+  - family-names: "Bercovich"
+    given-names: "Tomer"
+  - family-names: "Katanov"
+    given-names: "Liran"
+  - family-names: "Elron"
+    given-names: "Adi"
+date-released: 2026-09-09
+url: "https://github.com/marl-robots/jax_marl_rware"
+license: MIT
+references:
+  - type: software
+    title: "Multi-Robot Warehouse (RWARE)"
+    authors:
+      - family-names: "Christianos"
+        given-names: "Filippos"
+    url: "https://github.com/semitable/robotic-warehouse"
+  - type: conference-paper
+    title: "Benchmarking Multi-Agent Deep Reinforcement Learning Algorithms in Cooperative Tasks"
+    authors:
+      - family-names: "Papoudakis"
+        given-names: "Georgios"
+      - family-names: "Christianos"
+        given-names: "Filippos"
+      - family-names: "Schäfer"
+        given-names: "Lukas"
+      - family-names: "Albrecht"
+        given-names: "Stefano V."
+    year: 2021
+    url: "http://arxiv.org/abs/2006.07869"
